@@ -4,6 +4,7 @@ const tls = require('node:tls');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { neon, Pool } = require('@neondatabase/serverless');
 
 // Load local settings without replacing values supplied by the hosting environment.
 const envFile = path.join(__dirname, '.env');
@@ -15,32 +16,104 @@ if (fs.existsSync(envFile)) {
 }
 
 const port = Number(process.env.PORT || 3000);
-const dataDir = path.join(__dirname, 'data');
-const dbFile = path.join(dataDir, 'records.json');
+const dbFile = path.join(__dirname, 'data', 'records.json');
 const sessions = new Map();
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png' };
 const departments = ['IT', 'MERL', 'Programmes', 'Finance', 'People & Culture'];
 const reportDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const reportStatuses = ['Not Started', 'In Progress', 'Completed', 'On Hold', 'Not Applicable'];
 const reportFields = ['activity', 'action', 'dateBy', 'progressUpdate', 'followUpAction', 'comments'];
-fs.mkdirSync(dataDir, { recursive: true });
-let db = fs.existsSync(dbFile) ? JSON.parse(fs.readFileSync(dbFile, 'utf8')) : { users: [], reports: [] };
-if (!Array.isArray(db.users)) db.users = [];
-if (!Array.isArray(db.reports)) db.reports = [];
-if (!Array.isArray(db.activities)) db.activities = [];
-if (!Array.isArray(db.drafts)) db.drafts = [];
-if (!Array.isArray(db.publicHolidays)) db.publicHolidays = [];
-if (!Array.isArray(db.communityPosts)) db.communityPosts = [];
-let migratedReviews = false;
-for (const report of db.reports) {
-  if (!Array.isArray(report.feedback)) {
-    report.feedback = (Array.isArray(report.comments) ? report.comments : []).map(comment => ({ id: comment.id || crypto.randomUUID(), authorId: comment.authorId, authorName: comment.authorName, text: comment.text, createdAt: comment.createdAt, sentAt: comment.createdAt, replies: [] }));
-    migratedReviews = true;
+const emptyDatabase = () => ({ users: [], reports: [], activities: [], drafts: [], publicHolidays: [], communityPosts: [] });
+let db = emptyDatabase();
+let sql;
+let pool;
+let persistenceQueue = Promise.resolve();
+function normalizeDatabase(source) {
+  const normalized = source && typeof source === 'object' ? source : emptyDatabase();
+  for (const key of ['users', 'reports', 'activities', 'drafts', 'publicHolidays', 'communityPosts']) if (!Array.isArray(normalized[key])) normalized[key] = [];
+  let migratedReviews = false;
+  for (const report of normalized.reports) {
+    if (!Array.isArray(report.feedback)) {
+      report.feedback = (Array.isArray(report.comments) ? report.comments : []).map(comment => ({ id: comment.id || crypto.randomUUID(), authorId: comment.authorId, authorName: comment.authorName, text: comment.text, createdAt: comment.createdAt, sentAt: comment.createdAt, replies: [] }));
+      migratedReviews = true;
+    }
+    for (const feedback of report.feedback) if (!Array.isArray(feedback.replies)) feedback.replies = [];
   }
-  for (const feedback of report.feedback) if (!Array.isArray(feedback.replies)) feedback.replies = [];
+  return { database: normalized, migratedReviews };
 }
-function persist() { fs.writeFileSync(dbFile, JSON.stringify(db, null, 2), { mode: 0o600 }); }
-if (migratedReviews) persist();
+async function initializeDatabase() {
+  const connectionString = String(process.env.DATABASE_URL || '').trim();
+  if (!connectionString) throw new Error('DATABASE_URL is required. Add your Neon PostgreSQL connection string to .env.');
+  sql = neon(connectionString);
+  pool = new Pool({ connectionString, max: 2 });
+  await sql`CREATE TABLE IF NOT EXISTS camfed_report_state (id smallint PRIMARY KEY CHECK (id = 1), data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`;
+  await pool.query('CREATE TABLE IF NOT EXISTS camfed_report_assets (id text PRIMARY KEY, content_type text NOT NULL, data bytea NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())');
+  let rows = await sql`SELECT data FROM camfed_report_state WHERE id = 1`;
+  if (!rows.length) {
+    let initial = emptyDatabase();
+    if (fs.existsSync(dbFile)) initial = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
+    db = normalizeDatabase(initial).database;
+    await persist();
+    rows = await sql`SELECT data FROM camfed_report_state WHERE id = 1`;
+  }
+  if (!rows.length) throw new Error('Neon did not return the application data row after initialization.');
+  const normalized = normalizeDatabase(rows[0].data);
+  db = normalized.database;
+  if (normalized.migratedReviews || databaseHasInlineAssets(db)) await persist();
+}
+function parseDataUri(value) {
+  const match = String(value || '').match(/^data:([\w.+/-]+);base64,([A-Za-z0-9+/]+=*)$/);
+  return match ? { contentType: match[1], encoded: match[2] } : null;
+}
+function databaseHasInlineAssets(database) {
+  return database.users.some(user => Boolean(parseDataUri(user.profilePicture))) || database.communityPosts.some(post => (post.attachments || []).some(item => Boolean(parseDataUri(item.data))));
+}
+function persist() {
+  if (!sql || !pool) return Promise.reject(new Error('The Neon database is not initialized.'));
+  const snapshot = JSON.parse(JSON.stringify(db));
+  const assets = [];
+  for (const user of snapshot.users) {
+    const asset = parseDataUri(user.profilePicture);
+    if (asset) {
+      const id = 'profile:' + user.id;
+      assets.push({ id, ...asset });
+      user.profilePictureAssetId = id;
+      delete user.profilePicture;
+    }
+  }
+  for (const post of snapshot.communityPosts) for (const attachment of post.attachments || []) {
+    const asset = parseDataUri(attachment.data);
+    if (asset) {
+      const id = 'community:' + attachment.id;
+      assets.push({ id, ...asset });
+      attachment.assetId = id;
+      delete attachment.data;
+    }
+  }
+  const serialized = JSON.stringify(snapshot);
+  persistenceQueue = persistenceQueue.catch(() => {}).then(async () => {
+    for (const asset of assets) await pool.query('INSERT INTO camfed_report_assets (id, content_type, data, updated_at) VALUES ($1, $2, $3, now()) ON CONFLICT (id) DO UPDATE SET content_type = EXCLUDED.content_type, data = EXCLUDED.data, updated_at = now()', [asset.id, asset.contentType, Buffer.from(asset.encoded, 'base64')]);
+    for (const user of db.users) {
+      const saved = snapshot.users.find(item => item.id === user.id);
+      if (saved?.profilePictureAssetId && user.profilePicture) { user.profilePictureAssetId = saved.profilePictureAssetId; delete user.profilePicture; }
+    }
+    for (const post of db.communityPosts) {
+      const saved = snapshot.communityPosts.find(item => item.id === post.id);
+      for (const attachment of post.attachments || []) {
+        const savedAttachment = saved?.attachments?.find(item => item.id === attachment.id);
+        if (savedAttachment?.assetId && attachment.data) { attachment.assetId = savedAttachment.assetId; delete attachment.data; }
+      }
+    }
+    await sql`INSERT INTO camfed_report_state (id, data, updated_at) VALUES (1, ${serialized}::jsonb, now()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`;
+  });
+  return persistenceQueue;
+}
+async function readAssetDataUri(assetId) {
+  if (!assetId || !pool) return null;
+  const result = await pool.query('SELECT content_type, data FROM camfed_report_assets WHERE id = $1', [assetId]);
+  const asset = result.rows[0];
+  return asset ? 'data:' + asset.content_type + ';base64,' + Buffer.from(asset.data).toString('base64') : null;
+}
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   return new Promise((resolve, reject) => crypto.scrypt(password, salt, 64, (err, key) => err ? reject(err) : resolve({ salt, hash: key.toString('hex') })));
 }
@@ -221,7 +294,7 @@ async function bootstrapAdmin() {
   const existing = db.users.find(user => user.email === email);
   if (existing) { existing.role = 'admin'; existing.active = true; }
   else db.users.push({ id: crypto.randomUUID(), role: 'admin', email, fullName: 'Administrator', department: '', designation: '', active: true, password: await hashPassword(password) });
-  persist();
+  await persist();
 }
 
 const server = http.createServer(async (req, res) => {
@@ -255,7 +328,9 @@ const server = http.createServer(async (req, res) => {
       const post = db.communityPosts.find(item => item.id === communityAttachmentMatch[1]);
       const attachment = post?.attachments?.find(item => item.id === communityAttachmentMatch[2]);
       if (!attachment) return send(res, 404, { error: 'Attachment not found.' });
-      const bytes = Buffer.from(attachment.data.split(',')[1], 'base64');
+      const storedData = attachment.data || await readAssetDataUri(attachment.assetId);
+      if (!storedData) return send(res, 404, { error: 'Attachment data not found.' });
+      const bytes = Buffer.from(storedData.split(',')[1], 'base64');
       res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(attachment.name)}`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store' });
       return res.end(bytes);
     }
@@ -275,7 +350,7 @@ const server = http.createServer(async (req, res) => {
         safeAttachments.push({ id: crypto.randomUUID(), name, mimeType: match[1], data: attachment.data });
       }
       const post = { id: crypto.randomUUID(), authorId: user.id, type: body.type, title, text, attachments: safeAttachments, reactions: {}, comments: [], createdAt: new Date().toISOString() };
-      db.communityPosts.push(post); persist();
+      db.communityPosts.push(post); await persist();
       queueEmailNotifications(db.users.filter(person => person.id !== user.id), { type: 'Community Engagement', subject: 'Community Engagement: ' + title.slice(0, 120), description: body.type + ': ' + text.slice(0, 600), actor: user.fullName, dashboard: 'community' });
       return send(res, 201, { ok: true, post: { ...post, authorName: user.fullName } });
     }
@@ -283,7 +358,7 @@ const server = http.createServer(async (req, res) => {
     if (communityPostMatch && ['PUT', 'DELETE'].includes(req.method)) {
       const post = db.communityPosts.find(item => item.id === communityPostMatch[1] && item.authorId === user.id);
       if (!post) return send(res, 404, { error: 'Your post was not found.' });
-      if (req.method === 'DELETE') { db.communityPosts = db.communityPosts.filter(item => item.id !== post.id); persist(); return send(res, 200, { ok: true }); }
+      if (req.method === 'DELETE') { db.communityPosts = db.communityPosts.filter(item => item.id !== post.id); await persist(); return send(res, 200, { ok: true }); }
       const body = await readBody(req, 700 * 1024 * 1024);
       const text = String(body.text || '').trim(); const title = String(body.title || '').trim();
       if (!title || title.length > 160 || !text || text.length > 10000 || !['update', 'story', 'announcement', 'news', 'other'].includes(body.type)) return send(res, 400, { error: 'Enter a title, message, and valid post type.' });
@@ -302,7 +377,7 @@ const server = http.createServer(async (req, res) => {
         }
         post.attachments = safeAttachments;
       }
-      persist(); return send(res, 200, { ok: true });
+      await persist(); return send(res, 200, { ok: true });
     }
     const communityReactionMatch = url.pathname.match(/^\/api\/community\/posts\/([\w-]+)\/reactions$/);
     if (communityReactionMatch && req.method === 'POST') {
@@ -313,7 +388,7 @@ const server = http.createServer(async (req, res) => {
       post.reactions = normalizeCommunityReactions(post.reactions);
       const users = Array.isArray(post.reactions[reaction]) ? post.reactions[reaction] : [];
       post.reactions[reaction] = users.includes(user.id) ? users.filter(id => id !== user.id) : [...users, user.id];
-      persist(); return send(res, 200, { reactions: post.reactions });
+      await persist(); return send(res, 200, { reactions: post.reactions });
     }
     const communityCommentMatch = url.pathname.match(/^\/api\/community\/posts\/([\w-]+)\/comments$/);
     if (communityCommentMatch && req.method === 'POST') {
@@ -323,10 +398,10 @@ const server = http.createServer(async (req, res) => {
       if (!text || text.length > 3000) return send(res, 400, { error: 'Enter a comment of 1 to 3,000 characters.' });
       if (!Array.isArray(post.comments)) post.comments = [];
       post.comments.push({ id: crypto.randomUUID(), authorId: user.id, text, createdAt: new Date().toISOString() });
-      persist(); return send(res, 201, { ok: true });
+      await persist(); return send(res, 201, { ok: true });
     }
     if (url.pathname === '/api/my/profile-picture') {
-      if (req.method === 'GET') return send(res, 200, { picture: user.profilePicture || null });
+      if (req.method === 'GET') return send(res, 200, { picture: user.profilePicture || await readAssetDataUri(user.profilePictureAssetId) || null });
       if (req.method === 'PUT') {
         const body = await readBody(req, 42 * 1024 * 1024);
         const picture = String(body.picture || '');
@@ -334,9 +409,9 @@ const server = http.createServer(async (req, res) => {
         if (!match) return send(res, 400, { error: 'Upload a PNG, JPEG, or WebP image.' });
         const bytes = Buffer.from(match[2], 'base64');
         if (!bytes.length || bytes.length > 30 * 1024 * 1024) return send(res, 400, { error: 'The profile picture must be 30 MB or smaller.' });
-        user.profilePicture = picture; persist(); return send(res, 200, { ok: true });
+        user.profilePicture = picture; await persist(); return send(res, 200, { ok: true });
       }
-      if (req.method === 'DELETE') { delete user.profilePicture; persist(); return send(res, 200, { ok: true }); }
+      if (req.method === 'DELETE') { delete user.profilePicture; delete user.profilePictureAssetId; await persist(); return send(res, 200, { ok: true }); }
     }
     if (url.pathname === '/api/my/draft') {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
@@ -358,12 +433,12 @@ const server = http.createServer(async (req, res) => {
         const existing = db.drafts.find(item => item.userId === user.id && item.weekCommencing === week);
         if (existing) { existing.fields = fields; existing.updatedAt = new Date().toISOString(); }
         else db.drafts.push({ userId: user.id, weekCommencing: week, fields, updatedAt: new Date().toISOString() });
-        persist(); return send(res, 200, { ok: true });
+        await persist(); return send(res, 200, { ok: true });
       }
       if (req.method === 'DELETE') {
         const week = url.searchParams.get('week') || '';
         db.drafts = db.drafts.filter(item => item.userId !== user.id || item.weekCommencing !== week);
-        persist(); return send(res, 200, { ok: true });
+        await persist(); return send(res, 200, { ok: true });
       }
     }
     if (url.pathname.startsWith('/api/admin/')) {
@@ -373,7 +448,7 @@ const server = http.createServer(async (req, res) => {
         const body = await readBody(req); const date = String(body.date || ''); const name = String(body.name || '').trim().slice(0, 100);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`)) || new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date) return send(res, 400, { error: 'Enter a valid public holiday date.' });
         if (db.publicHolidays.some(item => item.date === date)) return send(res, 400, { error: 'That date is already designated as a public holiday.' });
-        db.publicHolidays.push({ date, name }); persist(); return send(res, 201, { holiday: { date, name } });
+        db.publicHolidays.push({ date, name }); await persist(); return send(res, 201, { holiday: { date, name } });
       }
       const holidayMatch = url.pathname.match(/^\/api\/admin\/holidays\/(\d{4}-\d{2}-\d{2})$/);
       if (holidayMatch) {
@@ -383,9 +458,9 @@ const server = http.createServer(async (req, res) => {
           const body = await readBody(req); const date = String(body.date || ''); const name = String(body.name || '').trim().slice(0, 100);
           if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`)) || new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date) return send(res, 400, { error: 'Enter a valid public holiday date.' });
           if (db.publicHolidays.some(item => item !== holiday && item.date === date)) return send(res, 400, { error: 'That date is already designated as a public holiday.' });
-          holiday.date = date; holiday.name = name; persist(); return send(res, 200, { holiday });
+          holiday.date = date; holiday.name = name; await persist(); return send(res, 200, { holiday });
         }
-        if (req.method === 'DELETE') { db.publicHolidays = db.publicHolidays.filter(item => item !== holiday); persist(); return send(res, 200, { ok: true }); }
+        if (req.method === 'DELETE') { db.publicHolidays = db.publicHolidays.filter(item => item !== holiday); await persist(); return send(res, 200, { ok: true }); }
       }
       if (req.method === 'GET' && url.pathname === '/api/admin/users') return send(res, 200, { users: db.users.filter(item => item.role === 'user').map(publicUser), lineManagers: db.users.filter(item => ['user', 'admin'].includes(item.role) && item.active !== false).map(publicUser) });
       if (req.method === 'POST' && url.pathname === '/api/admin/users') {
@@ -401,7 +476,7 @@ const server = http.createServer(async (req, res) => {
         if (!lineManagerId) return send(res, 400, { error: 'Assign a Line Manager before creating this account.' });
         if (!db.users.some(item => item.id === lineManagerId && ['user', 'admin'].includes(item.role) && item.active !== false)) return send(res, 400, { error: 'Select an active account as Line Manager.' });
         const created = { id: crypto.randomUUID(), role: 'user', email, fullName: String(body.fullName || '').trim(), department, designation: String(body.designation || '').trim(), lineManagerId, active: true, password: await hashPassword(password) };
-        db.users.push(created); persist(); return send(res, 201, { user: publicUser(created) });
+        db.users.push(created); await persist(); return send(res, 201, { user: publicUser(created) });
       }
       const match = url.pathname.match(/^\/api\/admin\/users\/([\w-]+)$/);
       if (match) {
@@ -418,14 +493,14 @@ const server = http.createServer(async (req, res) => {
           }
           target.email = email; target.fullName = String(body.fullName ?? target.fullName).trim(); target.department = String(body.department ?? target.department); target.designation = String(body.designation ?? target.designation);
           if (body.password) { if (String(body.password).length < 10) return send(res, 400, { error: 'Password must have at least 10 characters.' }); target.password = await hashPassword(String(body.password)); }
-          if (body.active !== undefined) target.active = Boolean(body.active); persist(); return send(res, 200, { user: publicUser(target) });
+          if (body.active !== undefined) target.active = Boolean(body.active); await persist(); return send(res, 200, { user: publicUser(target) });
         }
         if (req.method === 'DELETE') {
           // Keep submitted reports and their feedback threads. Route reports and direct reports
           // assigned to a deleted manager to the administrator performing the deletion.
           for (const report of db.reports) if (report.lineManagerId === target.id) { report.originalLineManagerId = target.id; report.lineManagerId = user.id; }
           for (const account of db.users) if (account.id !== target.id && account.lineManagerId === target.id) account.lineManagerId = user.id;
-          db.users = db.users.filter(item => item.id !== target.id); persist(); return send(res, 200, { ok: true });
+          db.users = db.users.filter(item => item.id !== target.id); await persist(); return send(res, 200, { ok: true });
         }
       }
     }
@@ -458,7 +533,7 @@ const server = http.createServer(async (req, res) => {
         return !holidayDates.has(date.toISOString().slice(0, 10)) && (!entry.activity || reportFields.some(field => entry[field].length > 10000));
       })) return send(res, 400, { error: 'Enter an activity for each working day. Each table entry must be 10,000 characters or fewer.' });
       report.id = crypto.randomUUID(); report.userId = user.id; report.lineManagerId = lineManager.id; report.submittedAt = new Date().toISOString(); report.staff = { weekCommencing, fullName: user.fullName, department: user.department, designation: user.designation }; report.activities = activities; report.feedback = [];
-      db.reports.push(report); persist(); return send(res, 201, { ok: true, id: report.id });
+      db.reports.push(report); await persist(); return send(res, 201, { ok: true, id: report.id });
     }
     if (req.method === 'GET' && url.pathname === '/api/my/reports') {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
@@ -479,7 +554,7 @@ const server = http.createServer(async (req, res) => {
       if (!text || text.length > 5000 || !['Not Started', 'In Progress', 'Completed', 'On Hold'].includes(status)) return send(res, 400, { error: 'Enter an update (up to 5,000 characters) and choose a valid status.' });
       activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: user.id, text, status, createdAt: new Date().toISOString() });
       activity.statusByUser = { ...(activity.statusByUser || {}), [user.id]: status };
-      persist(); return send(res, 201, { ok: true });
+      await persist(); return send(res, 201, { ok: true });
     }
     if (req.method === 'GET' && url.pathname === '/api/manager/activities') {
       if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
@@ -503,7 +578,7 @@ const server = http.createServer(async (req, res) => {
       const changed = title !== previousTitle || description !== previousDescription || deadline !== previousDeadline || assignmentChanged;
       if (!changed) return send(res, 200, { activity, changed: false });
       activity.title = title; activity.description = description; activity.deadline = deadline; activity.assigneeIds = assigneeIds; activity.updatedAt = new Date().toISOString();
-      persist();
+      await persist();
       const affectedIds = new Set([...previousAssigneeIds, ...assigneeIds]);
       const recipients = db.users.filter(person => affectedIds.has(person.id) && person.active !== false);
       queueEmailNotifications(recipients, { type: 'Deadline Activity Changed', subject: 'Activity updated: ' + title, description: person => (assigneeIds.includes(person.id) ? 'You are assigned to this activity.' : 'You are no longer assigned to this activity.') + '\nActivity: ' + title + '\n' + description + '\nPrevious deadline: ' + previousDeadline + '\nNew deadline: ' + deadline, actor: user.fullName, dashboard: 'assigned' });
@@ -519,7 +594,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req); const text = String(body.text || '').trim();
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter a reply of 1 to 5,000 characters.' });
       activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: assigneeId, text, status: activity.statusByUser?.[assigneeId] || 'Not Started', createdAt: new Date().toISOString() });
-      persist(); queueEmailNotifications([assignee], { type: 'Deadline Activity Update', subject: 'Activity update: ' + activity.title, description: text + '\nDeadline: ' + activity.deadline, actor: user.fullName, dashboard: 'assigned' }); return send(res, 201, { ok: true });
+      await persist(); queueEmailNotifications([assignee], { type: 'Deadline Activity Update', subject: 'Activity update: ' + activity.title, description: text + '\nDeadline: ' + activity.deadline, actor: user.fullName, dashboard: 'assigned' }); return send(res, 201, { ok: true });
     }
     if (req.method === 'POST' && url.pathname === '/api/manager/activities') {
       if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
@@ -529,7 +604,7 @@ const server = http.createServer(async (req, res) => {
       const dateValid = /^\d{4}-\d{2}-\d{2}$/.test(deadline) && !Number.isNaN(Date.parse(`${deadline}T00:00:00Z`)) && new Date(`${deadline}T00:00:00Z`).toISOString().slice(0, 10) === deadline;
       if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !assigneeIds.length || assigneeIds.some(id => !assignedIds.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select only active users assigned to you.' });
       const activity = { id: crypto.randomUUID(), lineManagerId: user.id, title, description, deadline, assigneeIds, statusByUser: {}, updates: [], createdAt: new Date().toISOString() };
-      db.activities.push(activity); persist();
+      db.activities.push(activity); await persist();
       queueEmailNotifications(db.users.filter(person => assigneeIds.includes(person.id)), { type: 'Deadline Activity Assigned', subject: 'New activity: ' + title, description: description + '\nDeadline: ' + deadline, actor: user.fullName, dashboard: 'assigned' });
       return send(res, 201, { activity });
     }
@@ -552,7 +627,7 @@ const server = http.createServer(async (req, res) => {
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter feedback of 1 to 5,000 characters.' });
       if (!Array.isArray(report.feedback)) report.feedback = [];
       const feedback = { id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, text, createdAt: new Date().toISOString(), sentAt: null, replies: [] };
-      report.feedback.push(feedback); persist(); return send(res, 201, { feedback });
+      report.feedback.push(feedback); await persist(); return send(res, 201, { feedback });
     }
     const sendFeedbackMatch = url.pathname.match(/^\/api\/manager\/reports\/([\w-]+)\/feedback\/([\w-]+)\/send$/);
     if (req.method === 'POST' && sendFeedbackMatch) {
@@ -562,7 +637,7 @@ const server = http.createServer(async (req, res) => {
       if (!feedback) return send(res, 404, { error: 'Feedback draft not found.' });
       const newlySent = !feedback.sentAt;
       if (newlySent) feedback.sentAt = new Date().toISOString();
-      persist();
+      await persist();
       if (newlySent) { const recipient = db.users.find(item => item.id === report.userId && item.active !== false); queueEmailNotifications(recipient ? [recipient] : [], { type: 'Line Manager Feedback', subject: 'Feedback on your weekly report', description: feedback.text, actor: user.fullName, dashboard: 'reports' }); }
       return send(res, 200, { ok: true });
     }
@@ -575,7 +650,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req); const text = String(body.reply || '').trim();
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter a reply of 1 to 5,000 characters.' });
       feedback.replies.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, text, createdAt: new Date().toISOString() });
-      persist(); return send(res, 201, { ok: true });
+      await persist(); return send(res, 201, { ok: true });
     }
     if (req.method === 'GET' && !url.pathname.startsWith('/api/')) {
       const relative = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
@@ -586,6 +661,6 @@ const server = http.createServer(async (req, res) => {
   } catch (error) { console.error(error); send(res, 500, { error: 'The request could not be completed.' }); }
 });
 
-bootstrapAdmin().then(() => {
+initializeDatabase().then(bootstrapAdmin).then(() => {
   server.listen(port, () => console.log(`Weekly Activity Portal running at http://localhost:${port}`));
 }).catch(error => { console.error(error.message); process.exitCode = 1; });
