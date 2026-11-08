@@ -13,7 +13,7 @@ npm install
 npm start
 ```
 
-Open `http://localhost:3000`. The Node app serves both the interface and `/api/*` routes; Neon provides the database, not web hosting. Vercel deployments use the catch-all Node function in `api/[...path].js`. Set `DATABASE_URL`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` in the Vercel project environment, and initialize Neon locally first so the existing ignored data file is imported before the hosted function receives requests. Vercel Functions limit request and response bodies to 4.5 MB, so 50 MB attachments need a separate Node web-service route or direct object-storage uploads.
+Open `http://localhost:3000`. The Node app serves both the interface and `/api/*` routes; Neon provides the database, not web hosting. Vercel deployments use one catch-all Node function in `api/[...path].js` to handle all `/api/*` endpoints and stay within the Hobby plan limit of 12 Serverless Functions per deployment. Set `DATABASE_URL`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` in the Vercel project environment, and initialize Neon locally first so the existing ignored data file is imported before the hosted function receives requests. Vercel Functions limit request and response bodies to 4.5 MB, so 50 MB attachments need a separate Node web-service route or direct object-storage uploads.
 
 On first startup, if the Neon state table is empty, the app imports `data/records.json` once. The file is retained as a migration backup; new changes are written to Neon. The app stores account/report data in a JSONB state row and photo/document bytes in a separate `BYTEA` table using the Neon driver’s WebSocket pool. Node.js 22 or later is required.
 
