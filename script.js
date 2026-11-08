@@ -45,7 +45,13 @@ function markActivityNotificationsSeen() {
 
 async function api(url, options = {}) {
   const response = await fetch(url, { credentials: "same-origin", ...options, headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers } });
-  const result = await response.json();
+  const responseText = await response.text();
+  let result;
+  try { result = responseText ? JSON.parse(responseText) : {}; }
+  catch {
+    const preview = responseText.replace(/\s+/g, " ").slice(0, 160);
+    throw new Error(`The server returned a non-JSON response (${response.status}) for ${url}.${preview ? " " + preview : ""}`);
+  }
   if (!response.ok) throw new Error(result.error || "Request failed.");
   return result;
 }
