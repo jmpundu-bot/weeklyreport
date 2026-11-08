@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Weekly Report</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <section id="loginScreen" class="login-screen">
+    <div class="login-card">
+      <img src="Camfed(1).png" alt="CAMFED Zambia logo" class="brand-logo">
+      <p class="eyebrow">CAMFED ZAMBIA</p>
+      <h1>Weekly Activity Portal</h1>
+      <p class="subtitle">Choose your dashboard and sign in to continue.</p>
+      <div class="login-options">
+        <button class="btn btn-primary" type="button" data-login-role="user">User Dashboard</button>
+        <button class="btn btn-secondary" type="button" data-login-role="admin">Admin Dashboard</button>
+      </div>
+      <form id="loginForm" class="login-form" hidden>
+        <h2 id="loginHeading">Sign in</h2>
+        <label>Email address
+          <input type="email" name="email" autocomplete="username" required>
+        </label>
+        <label>Password
+          <input type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <div class="actions">
+          <button class="btn btn-secondary" type="button" id="backToOptions">Back</button>
+          <button class="btn btn-primary" type="submit">Sign in</button>
+        </div>
+      </form>
+      <p id="loginMessage" class="form-message" role="status" aria-live="polite"></p>
+    </div>
+  </section>
+  <div id="appNavigation" class="app-navigation" hidden>
+    <button id="menuToggle" class="menu-toggle" type="button" aria-label="Open dashboard navigation" aria-expanded="false" aria-controls="navSidebar"><span aria-hidden="true">&#9776;</span></button>
+    <button id="navBackdrop" class="sidebar-backdrop" type="button" aria-label="Close navigation" hidden></button>
+    <aside id="navSidebar" class="nav-sidebar" aria-label="Dashboard navigation" aria-hidden="true">
+      <div class="sidebar-heading"><img src="Camfed(1).png" alt="CAMFED Zambia" class="sidebar-brand-logo"><button id="sidebarClose" type="button" class="sidebar-close" aria-label="Close navigation">&times;</button></div>
+      <nav id="dashboardNav" class="dashboard-nav" aria-label="Available dashboards"></nav><button type="button" class="dashboard-nav-logout" data-logout>Sign out</button>
+    </aside>
+  </div>
+  <header id="dashboardHeader" class="dashboard-header" hidden>
+    <div class="dashboard-header-meta"><div class="dashboard-user-identity"><strong id="globalUserName"></strong><span id="globalUserEmail"></span></div><time id="globalCurrentDate"></time></div>
+    <div class="dashboard-header-main"><div class="dashboard-brand"><img src="Camfed(1).png" alt="CAMFED" class="dashboard-brand-logo"><p class="camfed-slogan">Learn, Thrive &amp; Lead for Change.</p></div><h1 id="activeDashboardTitle">Welcome</h1><div class="dashboard-profile-wrap"><span id="activityUpdateIndicator" class="activity-update-indicator" role="status" aria-label="New update in Deadline Activities" title="New update in Deadline Activities" hidden></span><label class="dashboard-profile-control" for="sharedProfilePictureInput" title="Upload or change profile photo"><img id="sharedProfilePicture" alt="Your profile photo" hidden><span id="sharedProfileInitials" aria-hidden="true"></span></label><input id="sharedProfilePictureInput" type="file" accept="image/png,image/jpeg,image/webp" hidden></div></div>
+  </header>
+  <main id="dashboardHome" class="dashboard-home" hidden><h1 id="dashboardWelcome">Welcome</h1><p>Choose a dashboard from the navigation menu to get started.</p></main>
+  <section id="adminScreen" class="admin-screen" hidden>
+    <main class="admin-content">
+      <section id="adminCommunitySection" class="community-section" aria-labelledby="admin-community-heading">
+        <div class="section-heading"><div><h2 id="admin-community-heading">Community Engagement</h2><p>Share news, stories, announcements, and useful information with everyone.</p></div></div>
+        <form id="adminCommunityForm" class="community-compose">
+          <label>Post type<select name="type"><option value="update">Update</option><option value="story">Story</option><option value="announcement">Announcement</option><option value="news">News</option><option value="other">Other</option></select></label>
+          <label>Title<input name="title" maxlength="160" required placeholder="Give your post a title"></label>
+          <label>Message<textarea name="text" maxlength="10000" required placeholder="Share with all users..."></textarea></label>
+          <label>Attach files <span class="field-hint">Up to 10 files, 50 MB each</span><input name="attachments" type="file" multiple></label>
+          <button class="btn btn-primary" type="submit">Publish post</button>
+        </form>
+        <p id="adminCommunityMessage" class="form-message" role="status" aria-live="polite"></p><div id="adminCommunityFeed" class="community-feed"></div>
+      </section>
+      <section id="adminUsersSection" aria-labelledby="admin-users-heading">
+      <h2 id="admin-users-heading">Manage user accounts</h2>
+      <form id="createUserForm" class="user-create-form">
+        <label>Full name<input name="fullName" required></label>
+        <label>Email address<input name="email" type="email" required></label>
+        <label>Department<select name="department" required><option value="">Select department</option><option value="IT">IT</option><option value="MERL">MERL</option><option value="Programmes">Programmes</option><option value="Finance">Finance</option><option value="People &amp; Culture">People &amp; Culture</option></select></label>
+        <label>Position<input name="designation"></label>
+        <label>Temporary password<input name="password" type="password" minlength="10" required></label>
+        <label>Line Manager<select name="lineManagerId" id="createLineManager" required><option value="">Select Line Manager</option></select></label>
+        <button class="btn btn-primary" type="submit">Create user</button>
+      </form>
+      <p id="adminMessage" class="form-message" role="status" aria-live="polite"></p>
+      <details class="admin-users-list"><summary>Users</summary><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Position</th><th>Line Manager</th><th>Account actions</th></tr></thead><tbody id="usersTable"></tbody></table></div></details>
+      </section>
+      <section id="adminHolidaysSection" class="holiday-admin-section" aria-labelledby="holiday-admin-heading">
+        <h2 id="holiday-admin-heading">Manage public holidays</h2>
+        <p>Dates marked as public holidays are locked in every user’s weekly report.</p>
+        <form id="holidayForm" class="holiday-form">
+          <label>Holiday date<input type="date" name="date" required></label>
+          <label>Holiday name (optional)<input name="name" maxlength="100" placeholder="e.g. Independence Day"></label>
+          <button class="btn btn-primary" type="submit">Add public holiday</button>
+        </form>
+        <p id="holidayMessage" class="form-message" role="status" aria-live="polite"></p>
+        <div class="table-wrap"><table><thead><tr><th>Date</th><th>Holiday</th><th>Actions</th></tr></thead><tbody id="holidayTable"></tbody></table></div>
+      </section>
+    </main>
+    <section id="adminReviewSection" class="manager-review-section admin-review-section" aria-label="Line Manager report review" hidden>
+      <div class="section-heading"><div><h2>Review reports assigned to you</h2><p>Submit feedback to the users assigned to you as Line Manager.</p></div></div>
+      <div class="manager-review-layout"><div id="adminManagerUsers" class="manager-user-list" aria-label="Assigned users"></div>
+      <div class="manager-user-reports"><h3 id="adminSelectedUserHeading" class="selected-user-heading">Select a user to review their reports.</h3><div id="adminManagerReports" class="manager-reports"></div></div></div>
+      <p id="adminManagerMessage" class="form-message" role="status" aria-live="polite"></p>
+    </section>
+    <section id="adminActivitySection" class="manager-review-section" aria-label="Line Manager activities" hidden>
+      <div class="section-heading"><div><h2>Activities and deadlines</h2><p>Create activities for the users assigned to you and track their updates.</p></div></div>
+      <form id="adminActivityForm" class="activity-create-form"><label>Activity title<input name="title" maxlength="200" required></label><label>Instructions<textarea name="description" maxlength="5000" required></textarea></label><label>Deadline<input name="deadline" type="date" required></label><fieldset><legend>Assign to</legend><div id="adminActivityAssignees" class="assignee-options"></div></fieldset><button class="btn btn-primary" type="submit">Create activity</button></form>
+      <p id="adminActivityMessage" class="form-message" role="status" aria-live="polite"></p><div id="adminActivities" class="manager-reports"></div>
+    </section>
+    <dialog id="editUserDialog" class="edit-user-dialog">
+      <form id="editUserForm" method="dialog">
+        <h2>Edit user account</h2>
+        <input type="hidden" name="id">
+        <label>Full name<input name="fullName" required></label>
+        <label>Email address<input name="email" type="email" required></label>
+        <label>Department<select name="department" required><option value="IT">IT</option><option value="MERL">MERL</option><option value="Programmes">Programmes</option><option value="Finance">Finance</option><option value="People &amp; Culture">People &amp; Culture</option></select></label>
+        <label>Position<input name="designation"></label>
+        <label>Line Manager<select name="lineManagerId" id="editLineManager" required><option value="">Select Line Manager</option></select></label>
+        <label>Reset password <span class="field-hint">Leave blank to keep the current password.</span><input name="password" type="password" minlength="10" autocomplete="new-password"></label>
+        <div class="actions"><button class="btn btn-secondary" type="button" id="cancelEditUser">Cancel</button><button class="btn btn-primary" type="submit">Save changes</button></div>
+      </form>
+    </dialog>
+  </section>
+  <main id="pageShell" class="page-shell">
+    <form id="weeklyActivityForm" class="activity-form">
+      <section class="staff-details">
+        <div class="details-grid">
+          <label>Week commencing (Monday)
+            <input type="date" name="weekCommencing" id="weekCommencing" required>
+          </label>
+        </div>
+      </section>
+
+      <section class="weekly-section" aria-labelledby="weekly-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="weekly-heading">Writing Weekly Report</h2>
+            <p>Select the status for each day, then complete the six-column activity table below it.</p>
+          </div>
+        </div>
+        <div id="daysContainer" class="days-grid"></div>
+      </section>
+
+      <div class="form-footer">
+        <p class="privacy-note"><span class="green-dot"></span> Your progress saves automatically as you type. Please review your entries before submitting.</p>
+        <div class="actions">
+          <button type="reset" class="btn btn-secondary">Clear form</button>
+          <button type="submit" class="btn btn-primary">Submit weekly activities <span aria-hidden="true">→</span></button>
+        </div>
+      </div>
+      <p id="draftSaveStatus" class="draft-save-status" role="status" aria-live="polite">Your progress saves automatically as you type.</p>
+      <div id="formMessage" class="form-message" role="status" aria-live="polite"></div>
+    </form>
+
+    <section id="userCommunitySection" class="community-section" aria-labelledby="community-heading">
+      <div class="section-heading"><div><h2 id="community-heading">Community Engagement</h2><p>Share news, stories, announcements, and useful information with everyone.</p></div></div>
+      <form id="userCommunityForm" class="community-compose">
+        <label>Post type<select name="type"><option value="update">Update</option><option value="story">Story</option><option value="announcement">Announcement</option><option value="news">News</option><option value="other">Other</option></select></label>
+        <label>Title<input name="title" maxlength="160" required placeholder="Give your post a title"></label>
+        <label>Message<textarea name="text" maxlength="10000" required placeholder="Share with all users..."></textarea></label>
+        <label>Attach files <span class="field-hint">Up to 10 files, 50 MB each</span><input name="attachments" type="file" multiple></label>
+        <button class="btn btn-primary" type="submit">Publish post</button>
+      </form>
+      <p id="userCommunityMessage" class="form-message" role="status" aria-live="polite"></p><div id="userCommunityFeed" class="community-feed"></div>
+    </section>
+
+    <section id="myReportsSection" class="submitted-reports-section" aria-labelledby="submitted-reports-heading">
+      <div class="section-heading"><div><h2 id="submitted-reports-heading">Submitted Reports</h2><p>Review reports you have submitted and read Line Manager feedback.</p></div></div>
+      <div id="myReports" class="manager-reports"></div>
+      <p id="myReportsMessage" class="form-message" role="status" aria-live="polite"></p>
+    </section>
+    <section id="myActivitiesSection" class="submitted-reports-section" aria-labelledby="my-activities-heading">
+      <div class="section-heading"><div><h2 id="my-activities-heading">Deadline Activities</h2><p>Deadlines and progress updates from your Line Manager.</p></div></div>
+      <div id="myActivities" class="manager-reports"></div><p id="myActivitiesMessage" class="form-message" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="managerReviewSection" class="manager-review-section" aria-labelledby="manager-review-heading" hidden>
+      <div class="section-heading"><div><h2 id="manager-review-heading">Review and comment on reports</h2><p>Reports submitted by users assigned to you appear here.</p></div></div>
+      <div class="manager-review-layout"><div id="managerUsers" class="manager-user-list" aria-label="Assigned users"></div>
+      <div class="manager-user-reports"><h3 id="selectedUserHeading" class="selected-user-heading">Select a user to review their reports.</h3><div id="managerReports" class="manager-reports"></div></div></div>
+      <p id="managerMessage" class="form-message" role="status" aria-live="polite"></p>
+    </section>
+    <section id="managerActivitySection" class="manager-review-section" hidden>
+      <div class="section-heading"><div><h2>Activities and deadlines</h2><p>Create activities for the users assigned to you and track their updates.</p></div></div>
+      <form id="managerActivityForm" class="activity-create-form"><label>Activity title<input name="title" maxlength="200" required></label><label>Instructions<textarea name="description" maxlength="5000" required></textarea></label><label>Deadline<input name="deadline" type="date" required></label><fieldset><legend>Assign to</legend><div id="managerActivityAssignees" class="assignee-options"></div></fieldset><button class="btn btn-primary" type="submit">Create activity</button></form>
+      <p id="managerActivityMessage" class="form-message" role="status" aria-live="polite"></p><div id="managerActivities" class="manager-reports"></div>
+    </section>
+
+    <footer>CAMFED Zambia <span>•</span> Weekly Activities</footer>
+  </main>
+  <script src="script.js"></script>
+</body>
+</html>
