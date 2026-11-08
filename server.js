@@ -17,20 +17,19 @@ if (fs.existsSync(envFile)) {
 
 const port = Number(process.env.PORT || 3000);
 const dbFile = path.join(__dirname, 'data', 'records.json');
-const sessions = new Map();
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png' };
 const departments = ['IT', 'MERL', 'Programmes', 'Finance', 'People & Culture'];
 const reportDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const reportStatuses = ['Not Started', 'In Progress', 'Completed', 'On Hold', 'Not Applicable'];
 const reportFields = ['activity', 'action', 'dateBy', 'progressUpdate', 'followUpAction', 'comments'];
-const emptyDatabase = () => ({ users: [], reports: [], activities: [], drafts: [], publicHolidays: [], communityPosts: [] });
+const emptyDatabase = () => ({ users: [], reports: [], activities: [], drafts: [], publicHolidays: [], communityPosts: [], sessions: [] });
 let db = emptyDatabase();
 let sql;
 let pool;
 let persistenceQueue = Promise.resolve();
 function normalizeDatabase(source) {
   const normalized = source && typeof source === 'object' ? source : emptyDatabase();
-  for (const key of ['users', 'reports', 'activities', 'drafts', 'publicHolidays', 'communityPosts']) if (!Array.isArray(normalized[key])) normalized[key] = [];
+  for (const key of ['users', 'reports', 'activities', 'drafts', 'publicHolidays', 'communityPosts', 'sessions']) if (!Array.isArray(normalized[key])) normalized[key] = [];
   let migratedReviews = false;
   for (const report of normalized.reports) {
     if (!Array.isArray(report.feedback)) {
@@ -44,11 +43,14 @@ function normalizeDatabase(source) {
 async function initializeDatabase() {
   const connectionString = String(process.env.DATABASE_URL || '').trim();
   if (!connectionString) throw new Error('DATABASE_URL is required. Add your Neon PostgreSQL connection string to .env.');
-  sql = neon(connectionString);
-  pool = new Pool({ connectionString, max: 2 });
-  await sql`CREATE TABLE IF NOT EXISTS camfed_report_state (id smallint PRIMARY KEY CHECK (id = 1), data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`;
-  await pool.query('CREATE TABLE IF NOT EXISTS camfed_report_assets (id text PRIMARY KEY, content_type text NOT NULL, data bytea NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())');
+  if (!sql) {
+    sql = neon(connectionString);
+    pool = new Pool({ connectionString, max: 2 });
+    await sql`CREATE TABLE IF NOT EXISTS camfed_report_state (id smallint PRIMARY KEY CHECK (id = 1), data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`;
+    await pool.query('CREATE TABLE IF NOT EXISTS camfed_report_assets (id text PRIMARY KEY, content_type text NOT NULL, data bytea NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())');
+  }
   let rows = await sql`SELECT data FROM camfed_report_state WHERE id = 1`;
+  if (!rows.length && process.env.VERCEL && !fs.existsSync(dbFile)) throw new Error('Initialize Neon from the local records before serving Vercel requests.');
   if (!rows.length) {
     let initial = emptyDatabase();
     if (fs.existsSync(dbFile)) initial = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
@@ -126,6 +128,11 @@ function send(res, status, value, headers = {}) {
   res.end(JSON.stringify(value));
 }
 function readBody(req, maxSize = 500000) {
+  if (req.body !== undefined) {
+    if (Buffer.isBuffer(req.body)) { try { return Promise.resolve(JSON.parse(req.body.toString('utf8') || '{}')); } catch { return Promise.reject(new Error('Invalid JSON')); } }
+    if (typeof req.body === 'string') { try { return Promise.resolve(JSON.parse(req.body || '{}')); } catch { return Promise.reject(new Error('Invalid JSON')); } }
+    if (req.body && typeof req.body === 'object') return Promise.resolve(req.body);
+  }
   return new Promise((resolve, reject) => {
     let body = ''; req.on('data', chunk => { body += chunk; if (body.length > maxSize) reject(new Error('Request too large')); });
     req.on('end', () => { try { resolve(JSON.parse(body || '{}')); } catch { reject(new Error('Invalid JSON')); } });
@@ -282,8 +289,8 @@ function normalizeCommunityReactions(reactions = {}) {
 }
 function currentUser(req) {
   const sid = (req.headers.cookie || '').match(/(?:^|;\s*)sid=([^;]+)/)?.[1];
-  const session = sid && sessions.get(sid);
-  if (!session || session.expires < Date.now()) { if (sid) sessions.delete(sid); return null; }
+  const session = sid && db.sessions.find(item => item.id === sid);
+  if (!session || session.expires < Date.now()) return null;
   return db.users.find(user => user.id === session.userId && user.active !== false) || null;
 }
 async function bootstrapAdmin() {
@@ -292,12 +299,18 @@ async function bootstrapAdmin() {
   if (!email && !password) return;
   if (!email || password.length < 12) throw new Error('Set both ADMIN_EMAIL and ADMIN_PASSWORD (at least 12 characters).');
   const existing = db.users.find(user => user.email === email);
-  if (existing) { existing.role = 'admin'; existing.active = true; }
-  else db.users.push({ id: crypto.randomUUID(), role: 'admin', email, fullName: 'Administrator', department: '', designation: '', active: true, password: await hashPassword(password) });
-  await persist();
+  if (existing) {
+    const changed = existing.role !== 'admin' || existing.active === false;
+    existing.role = 'admin';
+    existing.active = true;
+    if (changed) await persist();
+  } else {
+    db.users.push({ id: crypto.randomUUID(), role: 'admin', email, fullName: 'Administrator', department: '', designation: '', active: true, password: await hashPassword(password) });
+    await persist();
+  }
 }
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     if (req.method === 'GET' && url.pathname === '/api/session') {
@@ -308,11 +321,11 @@ const server = http.createServer(async (req, res) => {
       const user = db.users.find(item => item.email === email && item.active !== false);
       const valid = user && await verifyPassword(String(body.password || ''), user.password);
       if (!valid || (body.role === 'admin' && user.role !== 'admin') || (body.role === 'user' && user.role !== 'user')) return send(res, 401, { error: 'Email or password is incorrect for this dashboard.' });
-      const sid = crypto.randomBytes(32).toString('hex'); sessions.set(sid, { userId: user.id, expires: Date.now() + 8 * 60 * 60 * 1000 });
+      const sid = crypto.randomBytes(32).toString('hex'); db.sessions = db.sessions.filter(item => item.expires > Date.now()); db.sessions.push({ id: sid, userId: user.id, expires: Date.now() + 8 * 60 * 60 * 1000 }); await persist();
       return send(res, 200, { user: publicUser(user) }, { 'Set-Cookie': `sid=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${process.env.NODE_ENV === 'production' ? '; Secure' : ''}` });
     }
     if (req.method === 'POST' && url.pathname === '/api/logout') {
-      const sid = (req.headers.cookie || '').match(/(?:^|;\s*)sid=([^;]+)/)?.[1]; if (sid) sessions.delete(sid);
+      const sid = (req.headers.cookie || '').match(/(?:^|;\s*)sid=([^;]+)/)?.[1]; if (sid) { const count = db.sessions.length; db.sessions = db.sessions.filter(item => item.id !== sid); if (db.sessions.length !== count) await persist(); }
       return send(res, 200, { ok: true }, { 'Set-Cookie': 'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
     }
     const user = currentUser(req);
@@ -658,9 +671,14 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': mime[path.extname(file)] || 'application/octet-stream' }); return fs.createReadStream(file).pipe(res);
     }
     send(res, 404, { error: 'Not found.' });
-  } catch (error) { console.error(error); send(res, 500, { error: 'The request could not be completed.' }); }
-});
-
-initializeDatabase().then(bootstrapAdmin).then(() => {
+  } catch (error) { console.error(error); send(res, 500, { error: 'The request could not be completed.' }); }}
+const server = http.createServer(handleRequest);
+async function handleVercelRequest(req, res) {
+  await initializeDatabase();
+  await bootstrapAdmin();
+  return handleRequest(req, res);
+}
+module.exports = { handleVercelRequest };
+if (require.main === module) initializeDatabase().then(bootstrapAdmin).then(() => {
   server.listen(port, () => console.log(`Weekly Activity Portal running at http://localhost:${port}`));
 }).catch(error => { console.error(error.message); process.exitCode = 1; });
