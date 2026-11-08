@@ -1,4 +1,4 @@
-﻿module.exports = async (req, res) => {
+module.exports = async (req, res) => {
   const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   const originalPath = requestUrl.searchParams.get('__route');
 
