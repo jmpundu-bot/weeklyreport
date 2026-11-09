@@ -59,7 +59,7 @@ body {
 .dashboard-brand { min-width: 0; justify-self: start; }
 .dashboard-brand-logo { display: block; width: min(100%, 225px); max-height: 54px; object-fit: contain; object-position: left center; }
 .dashboard-brand .camfed-slogan { margin-top: 5px; font-size: 10px; letter-spacing: .8px; }
-.dashboard-header-main h1 { margin: 0; color: var(--green-dark); font-size: clamp(18px, 2vw, 25px); text-align: center; overflow-wrap: anywhere; }
+.dashboard-mission-slogan { margin: 0; color: var(--green-dark); font-size: clamp(13px, 1.55vw, 17px); line-height: 1.4; text-align: center; overflow-wrap: anywhere; }
 .dashboard-profile-wrap { position: relative; justify-self: end; }
 .dashboard-profile-control { display: grid; width: 68px; height: 68px; place-items: center; overflow: hidden; border: 2px solid #d7eadc; border-radius: 50%; color: var(--green-dark); background: var(--green-soft); font-size: 18px; font-weight: 800; cursor: pointer; }
 .dashboard-profile-control img { width: 100%; height: 100%; object-fit: cover; }
@@ -308,10 +308,12 @@ footer span { padding: 0 5px; color: var(--green); }
   body { background-attachment: scroll; }
   .menu-toggle { top: 14px; left: 10px; }
   .dashboard-header { padding: 10px 12px 10px 66px; }
-  .dashboard-header-main { grid-template-columns: minmax(0,1fr) minmax(0,1.2fr) minmax(48px,.65fr); gap: 8px; min-height: 68px; }
+  .dashboard-header-main { grid-template-columns: minmax(0,1fr) auto; gap: 8px; min-height: 68px; }
+  .dashboard-brand { grid-column: 1; grid-row: 1; }
+  .dashboard-profile-wrap { grid-column: 2; grid-row: 1; }
+  .dashboard-mission-slogan { grid-column: 1 / -1; grid-row: 2; padding: 2px 4px 4px; font-size: 13px; }
   .dashboard-brand-logo { max-height: 42px; }
   .dashboard-brand .camfed-slogan { font-size: 8px; letter-spacing: .4px; }
-  .dashboard-header-main h1 { font-size: clamp(14px, 3.5vw, 19px); }
   .dashboard-profile-control { width: 52px; height: 52px; }
   .dashboard-header-meta { align-items: flex-start; gap: 8px; }
   .dashboard-header-meta time { font-size: 11px; }

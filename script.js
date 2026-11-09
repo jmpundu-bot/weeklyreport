@@ -169,18 +169,11 @@ document.addEventListener("keydown", event => { if (event.key === "Escape" && do
 function openDashboard(view) {
   const admin = signedInUser?.role === "admin";
   const lineManager = Boolean(signedInUser?.isLineManager);
-  const viewLabels = {
-    weekly: "Writing Weekly Report", reports: "Submitted Reports", assigned: "Deadline Activities",
-    community: "Community Engagement", "manager-reports": "Review and Comment on Reports",
-    "manager-activities": "Activity Assignment and Deadline Management",
-    "admin-users": "Manage User Accounts", "admin-holidays": "Public Holiday Management"
-  };
   const allowed = admin
     ? ["admin-users", "admin-holidays", "community", ...(lineManager ? ["manager-reports", "manager-activities"] : [])]
     : ["weekly", "reports", "assigned", "community", ...(lineManager ? ["manager-reports", "manager-activities"] : [])];
   if (!allowed.includes(view)) return;
   activeDashboard = view;
-  document.getElementById("activeDashboardTitle").textContent = viewLabels[view];
   if (activityNotificationTimer) clearInterval(activityNotificationTimer);
   activityNotificationTimer = null;
   document.getElementById("dashboardHome").hidden = true;
@@ -231,7 +224,6 @@ function showDashboard(user) {
   document.querySelector(".admin-content").hidden = false;
   document.getElementById("dashboardHome").hidden = false;
   document.getElementById("dashboardWelcome").textContent = "Welcome, " + user.fullName;
-  document.getElementById("activeDashboardTitle").textContent = "Welcome";
   document.getElementById("globalUserName").textContent = user.fullName;
   document.getElementById("globalUserEmail").textContent = user.email;
   document.getElementById("globalCurrentDate").textContent = currentPortalDate();
