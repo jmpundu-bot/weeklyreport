@@ -12,6 +12,7 @@
 }
 
 * { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 body {
   margin: 0;
   padding: 32px 18px;
@@ -19,6 +20,7 @@ body {
   background: #622577;
   font-family: "DM Sans", Arial, sans-serif;
 }
+[id] { scroll-margin-top: 1rem; }
 [hidden] { display: none !important; }
 .login-screen { min-height: calc(100vh - 64px); display: grid; place-items: center; }
 .login-card { width: min(100%, 510px); padding: 32px; background: var(--white); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 12px 35px rgba(24, 66, 42, .1); }
@@ -43,7 +45,7 @@ body {
 .global-user-identity strong { color: var(--green-dark); font-size: 14px; }
 .global-user-identity span { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .global-user-bar time { flex: 0 0 auto; color: var(--green-dark); font-size: 13px; font-weight: 700; text-align: right; }
-.dashboard-header { position: sticky; z-index: 1100; top: 0; width: min(100%, 1060px); margin: 0 auto 20px; padding: 14px 24px; border: 1px solid var(--line); border-radius: 16px; background: #fff; box-shadow: 0 5px 20px rgba(24, 66, 42, .1); }
+.dashboard-header { position: relative; z-index: 1; width: min(100%, 1060px); margin: 0 auto 20px; padding: 14px 24px 14px 78px; border: 1px solid var(--line); border-radius: 16px; background: #fff; box-shadow: 0 5px 20px rgba(24, 66, 42, .1); }
 .dashboard-header-meta { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 30px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .dashboard-user-identity { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; }
 .dashboard-user-identity strong { color: var(--green-dark); font-size: 14px; }
@@ -63,8 +65,8 @@ body {
 .dashboard-home p { color: var(--muted); line-height: 1.6; }
 .dashboard-nav-logout { width: 100%; margin-top: 18px; padding: 12px 13px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: #fff; text-align: left; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
 .dashboard-nav-logout:hover { color: var(--green-dark); background: var(--green-soft); }
-.admin-screen { min-height: calc(100vh - 64px); }
-.menu-toggle { position: fixed; z-index: 1201; top: 16px; left: 16px; display: grid; width: 46px; height: 46px; place-items: center; border: 1px solid rgba(17, 104, 59, .18); border-radius: 12px; color: var(--green-dark); background: white; box-shadow: 0 5px 18px rgba(0, 0, 0, .16); cursor: pointer; font: inherit; font-size: 24px; line-height: 1; }
+.admin-screen { width: min(100%, 1060px); min-height: calc(100vh - 64px); margin: 0 auto; }
+.menu-toggle { position: fixed; z-index: 1201; top: 32px; left: 16px; display: grid; width: 46px; height: 46px; place-items: center; border: 1px solid rgba(17, 104, 59, .18); border-radius: 12px; color: var(--green-dark); background: white; box-shadow: 0 5px 18px rgba(0, 0, 0, .16); cursor: pointer; font: inherit; font-size: 24px; line-height: 1; }
 .menu-toggle:hover, .sidebar-close:hover { background: var(--green-soft); }
 .sidebar-backdrop { position: fixed; z-index: 1202; inset: 0; border: 0; background: rgba(20, 28, 23, .45); cursor: pointer; }
 .nav-sidebar { position: fixed; z-index: 1203; top: 0; bottom: 0; left: 0; width: min(310px, calc(100vw - 48px)); padding: 22px 16px; overflow-y: auto; background: #fff; box-shadow: 12px 0 34px rgba(0, 0, 0, .2); transform: translateX(-105%); transition: transform .22s ease; }
@@ -76,13 +78,14 @@ body {
 .dashboard-nav-link { width: 100%; padding: 12px 13px; border: 0; border-radius: 9px; color: var(--ink); background: transparent; text-align: left; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
 .dashboard-nav-link:hover, .dashboard-nav-link.is-current { color: var(--green-dark); background: var(--green-soft); }
 #adminCommunitySection, #adminUsersSection, #adminHolidaysSection, #adminReviewSection, #adminActivitySection, #weeklyActivityForm, #userCommunitySection, #myReportsSection, #myActivitiesSection, #managerReviewSection, #managerActivitySection { scroll-margin-top: 22px; }
-.app-navigation:not([hidden]) ~ #adminScreen .admin-header { padding-left: 78px; }
-.app-navigation:not([hidden]) ~ .page-shell .brand-header { padding-left: 78px; }
+.app-navigation:not([hidden]) ~ #adminScreen > .manager-review-section,
+.app-navigation:not([hidden]) ~ #adminScreen > .admin-content { width: 100%; }
 .admin-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 20px 26px; background: white; border: 1px solid var(--line); border-radius: 14px; }
 .admin-header h1 { font-size: 22px; }
 .admin-brand { display: flex; align-items: center; gap: 16px; }
 .admin-brand-logo { display: block; width: 150px; height: auto; object-fit: contain; }
 .admin-content { margin-top: 20px; padding: 28px; background: white; border: 1px solid var(--line); border-radius: 14px; }
+.admin-screen > .manager-review-section { margin: 20px auto 0; }
 .admin-content h2 { margin: 0 0 20px; font-size: 19px; }
 .admin-users-list { margin-top: 18px; border: 1px solid var(--line); border-radius: 10px; }
 .admin-users-list > summary { padding: 14px 16px; color: var(--green-dark); font-weight: 800; cursor: pointer; }
@@ -289,7 +292,8 @@ footer { padding: 20px 0 0; text-align: center; color: #858b85; font-size: 11px;
 footer span { padding: 0 5px; color: var(--green); }
 
 @media (max-width: 720px) {
-  .dashboard-header { padding: 10px 12px; }
+  .menu-toggle { top: 14px; left: 10px; }
+  .dashboard-header { padding: 10px 12px 10px 66px; }
   .dashboard-header-main { grid-template-columns: minmax(0,1fr) minmax(0,1.2fr) minmax(48px,.65fr); gap: 8px; min-height: 68px; }
   .dashboard-brand-logo { max-height: 42px; }
   .dashboard-brand .camfed-slogan { font-size: 8px; letter-spacing: .4px; }
@@ -300,6 +304,7 @@ footer span { padding: 0 5px; color: var(--green); }
   .global-user-bar { align-items: flex-start; flex-direction: column; gap: 4px; padding: 10px 12px 10px 66px; }
   .global-user-bar time { text-align: left; }
   body { padding: 14px 10px; }
+  .admin-screen { min-height: calc(100vh - 28px); }
   .brand-header { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 20px; }
   .brand-logo { width: min(100%, 300px); }
   .profile-photo-uploader { flex: 0 0 auto; }
