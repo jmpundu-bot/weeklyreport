@@ -333,7 +333,7 @@ async function handleRequest(req, res) {
     if (!user && url.pathname.startsWith('/api/')) return send(res, 401, { error: 'Please sign in.' });
     if (url.pathname === '/api/community/posts' && req.method === 'GET') {
       const activeUsers = new Map(db.users.filter(item => item.active !== false).map(item => [item.id, item]));
-      const posts = db.communityPosts.filter(post => activeUsers.has(post.authorId)).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(post => ({ ...post, reactions: normalizeCommunityReactions(post.reactions), attachments: (post.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), authorName: activeUsers.get(post.authorId).fullName, comments: (post.comments || []).filter(comment => activeUsers.has(comment.authorId)).map(comment => ({ ...comment, authorName: activeUsers.get(comment.authorId).fullName })) }));
+      const posts = db.communityPosts.filter(post => activeUsers.has(post.authorId)).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(post => ({ ...post, reactions: normalizeCommunityReactions(post.reactions), attachments: (post.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), authorName: activeUsers.get(post.authorId).fullName, comments: (post.comments || []).filter(comment => activeUsers.has(comment.authorId)).map(comment => ({ ...comment, authorName: activeUsers.get(comment.authorId).fullName, replies: (comment.replies || []).filter(reply => activeUsers.has(reply.authorId)).map(reply => ({ ...reply, authorName: activeUsers.get(reply.authorId).fullName })) })) }));
       return send(res, 200, { posts, currentUserId: user.id });
     }
     const communityAttachmentMatch = url.pathname.match(/^\/api\/community\/posts\/([\w-]+)\/attachments\/([\w-]+)$/);
@@ -411,6 +411,17 @@ async function handleRequest(req, res) {
       if (!text || text.length > 3000) return send(res, 400, { error: 'Enter a comment of 1 to 3,000 characters.' });
       if (!Array.isArray(post.comments)) post.comments = [];
       post.comments.push({ id: crypto.randomUUID(), authorId: user.id, text, createdAt: new Date().toISOString() });
+      await persist(); return send(res, 201, { ok: true });
+    }
+    const communityCommentReplyMatch = url.pathname.match(/^\/api\/community\/posts\/([\w-]+)\/comments\/([\w-]+)\/replies$/);
+    if (communityCommentReplyMatch && req.method === 'POST') {
+      const post = db.communityPosts.find(item => item.id === communityCommentReplyMatch[1]);
+      const comment = post?.comments?.find(item => item.id === communityCommentReplyMatch[2]);
+      if (!comment) return send(res, 404, { error: 'Comment not found.' });
+      const body = await readBody(req); const text = String(body.text || '').trim();
+      if (!text || text.length > 3000) return send(res, 400, { error: 'Enter a reply of 1 to 3,000 characters.' });
+      if (!Array.isArray(comment.replies)) comment.replies = [];
+      comment.replies.push({ id: crypto.randomUUID(), authorId: user.id, text, createdAt: new Date().toISOString() });
       await persist(); return send(res, 201, { ok: true });
     }
     if (url.pathname === '/api/my/profile-picture') {
