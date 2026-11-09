@@ -17,7 +17,7 @@ if (fs.existsSync(envFile)) {
 
 const port = Number(process.env.PORT || 3000);
 const dbFile = path.join(__dirname, 'data', 'records.json');
-const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png' };
+const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml' };
 const departments = ['IT', 'MERL', 'Programmes', 'Finance', 'People & Culture'];
 const reportDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const reportStatuses = ['Not Started', 'In Progress', 'Completed', 'On Hold', 'Not Applicable'];
