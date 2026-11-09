@@ -199,9 +199,6 @@ function openDashboard(view) {
     };
     for (const id of Object.values(userSections)) document.getElementById(id).hidden = true;
     document.getElementById(userSections[view]).hidden = false;
-                loadProfilePicture();
-  } else {
-        loadAdminProfilePicture();
   }
   if (view === "weekly") {
     document.getElementById("weekCommencing").value = currentMonday();
@@ -242,6 +239,7 @@ function showDashboard(user) {
   document.getElementById("dashboardHeader").hidden = false;
   displayProfilePicture(user.profilePicture || null);
   displayAdminProfilePicture(user.profilePicture || null);
+  loadProfilePicture();
   document.getElementById("appNavigation").hidden = false;
   setNavigationOpen(false);
   buildDashboardNavigation(user);
