@@ -54,7 +54,7 @@
           <label>Post type<select name="type"><option value="update">Update</option><option value="story">Story</option><option value="announcement">Announcement</option><option value="news">News</option><option value="other">Other</option></select></label>
           <label>Title<input name="title" maxlength="160" required placeholder="Give your post a title"></label>
           <label>Message<textarea name="text" maxlength="10000" required placeholder="Share with all users..."></textarea></label>
-          <label>Attach files <span class="field-hint">Up to 10 files, 50 MB each</span><input name="attachments" type="file" multiple></label>
+          <label>Attach files <span class="field-hint">Up to 10 files, 50 MB combined per post</span><input name="attachments" type="file" multiple></label>
           <button class="btn btn-primary" type="submit">Publish post</button>
         </form>
         <p id="adminCommunityMessage" class="form-message" role="status" aria-live="polite"></p><div id="adminCommunityFeed" class="community-feed"></div>
@@ -147,7 +147,7 @@
         <label>Post type<select name="type"><option value="update">Update</option><option value="story">Story</option><option value="announcement">Announcement</option><option value="news">News</option><option value="other">Other</option></select></label>
         <label>Title<input name="title" maxlength="160" required placeholder="Give your post a title"></label>
         <label>Message<textarea name="text" maxlength="10000" required placeholder="Share with all users..."></textarea></label>
-        <label>Attach files <span class="field-hint">Up to 10 files, 50 MB each</span><input name="attachments" type="file" multiple></label>
+        <label>Attach files <span class="field-hint">Up to 10 files, 50 MB combined per post</span><input name="attachments" type="file" multiple></label>
         <button class="btn btn-primary" type="submit">Publish post</button>
       </form>
       <p id="userCommunityMessage" class="form-message" role="status" aria-live="polite"></p><div id="userCommunityFeed" class="community-feed"></div>

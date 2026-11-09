@@ -348,18 +348,20 @@ async function handleRequest(req, res) {
       return res.end(bytes);
     }
     if (url.pathname === '/api/community/posts' && req.method === 'POST') {
-      const body = await readBody(req, 700 * 1024 * 1024);
+      const body = await readBody(req, 70 * 1024 * 1024);
       const text = String(body.text || '').trim();
       const title = String(body.title || '').trim();
       const allowedTypes = ['update', 'story', 'announcement', 'news', 'other'];
       if (!title || title.length > 160 || !text || text.length > 10000 || !allowedTypes.includes(body.type)) return send(res, 400, { error: 'Enter a title, message, and valid post type.' });
       const attachments = Array.isArray(body.attachments) ? body.attachments : [];
       if (attachments.length > 10) return send(res, 400, { error: 'Attach up to ten files per post.' });
-      const safeAttachments = [];
+      const safeAttachments = []; let attachmentBytes = 0;
       for (const attachment of attachments) {
         const name = String(attachment.name || '').replace(/[\\/\0-\x1f]/g, '').slice(0, 180);
         const match = String(attachment.data || '').match(/^data:([\w.+/-]+);base64,([A-Za-z0-9+/]+=*)$/);
-        if (!name || !match || Buffer.byteLength(match[2], 'base64') > 50 * 1024 * 1024) return send(res, 400, { error: 'Each attachment must be a valid file no larger than 50 MB.' });
+        if (!name || !match) return send(res, 400, { error: 'Each attachment must be a valid file.' });
+        attachmentBytes += Buffer.byteLength(match[2], 'base64');
+        if (attachmentBytes > 50 * 1024 * 1024) return send(res, 400, { error: 'All attachments on a post must total no more than 50 MB.' });
         safeAttachments.push({ id: crypto.randomUUID(), name, mimeType: match[1], data: attachment.data });
       }
       const post = { id: crypto.randomUUID(), authorId: user.id, type: body.type, title, text, attachments: safeAttachments, reactions: {}, comments: [], createdAt: new Date().toISOString() };
@@ -372,10 +374,9 @@ async function handleRequest(req, res) {
       const post = db.communityPosts.find(item => item.id === communityPostMatch[1] && item.authorId === user.id);
       if (!post) return send(res, 404, { error: 'Your post was not found.' });
       if (req.method === 'DELETE') { db.communityPosts = db.communityPosts.filter(item => item.id !== post.id); await persist(); return send(res, 200, { ok: true }); }
-      const body = await readBody(req, 700 * 1024 * 1024);
+      const body = await readBody(req, 70 * 1024 * 1024);
       const text = String(body.text || '').trim(); const title = String(body.title || '').trim();
       if (!title || title.length > 160 || !text || text.length > 10000 || !['update', 'story', 'announcement', 'news', 'other'].includes(body.type)) return send(res, 400, { error: 'Enter a title, message, and valid post type.' });
-      post.title = title; post.text = text; post.type = body.type; post.updatedAt = new Date().toISOString();
       if (Array.isArray(body.attachments)) {
         if (body.attachments.length > 10) return send(res, 400, { error: 'Attach up to ten files per post.' });
         const safeAttachments = [];
@@ -384,12 +385,20 @@ async function handleRequest(req, res) {
           else {
             const name = String(attachment.name || '').replace(/[\\/\0-\x1f]/g, '').slice(0, 180);
             const match = String(attachment.data || '').match(/^data:([\w.+/-]+);base64,([A-Za-z0-9+/]+=*)$/);
-            if (!name || !match || Buffer.byteLength(match[2], 'base64') > 50 * 1024 * 1024) return send(res, 400, { error: 'Each attachment must be a valid file no larger than 50 MB.' });
+            if (!name || !match) return send(res, 400, { error: 'Each attachment must be a valid file.' });
             safeAttachments.push({ id: crypto.randomUUID(), name, mimeType: match[1], data: attachment.data });
           }
         }
+        const attachmentSizes = await Promise.all(safeAttachments.map(async attachment => {
+          const data = attachment.data || (attachment.assetId ? await readAssetDataUri(attachment.assetId) : '');
+          const match = String(data || '').match(/^data:[\w.+/-]+;base64,([A-Za-z0-9+/]+=*)$/);
+          return match ? Buffer.byteLength(match[1], 'base64') : 0;
+        }));
+        const totalAttachmentBytes = attachmentSizes.reduce((total, size) => total + size, 0);
+        if (totalAttachmentBytes > 50 * 1024 * 1024) return send(res, 400, { error: 'All attachments on a post must total no more than 50 MB.' });
         post.attachments = safeAttachments;
       }
+      post.title = title; post.text = text; post.type = body.type; post.updatedAt = new Date().toISOString();
       await persist(); return send(res, 200, { ok: true });
     }
     const communityReactionMatch = url.pathname.match(/^\/api\/community\/posts\/([\w-]+)\/reactions$/);

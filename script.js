@@ -336,7 +336,7 @@ async function loadCommunityFeed(prefix = signedInUser?.role === "admin" ? "admi
 }
 async function submitCommunityPost(event, prefix) {
   event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); const files = [...(form.elements.attachments.files || [])];
-  if (files.length > 10 || files.some(file => file.size > 50 * 1024 * 1024)) { showMessage(document.getElementById(`${prefix}CommunityMessage`), "Attach up to ten files, each no larger than 50 MB."); return; }
+  if (files.length > 10 || files.reduce((total, file) => total + file.size, 0) > 50 * 1024 * 1024) { showMessage(document.getElementById(`${prefix}CommunityMessage`), "Attach up to ten files with a combined size no larger than 50 MB."); return; }
   try {
     const attachments = await Promise.all(files.map(file => new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve({ name: file.name, data: reader.result }); reader.onerror = () => reject(new Error(`Could not read ${file.name}.`)); reader.readAsDataURL(file); })));
     await api("/api/community/posts", { method: "POST", body: JSON.stringify({ type: data.get("type"), title: data.get("title"), text: data.get("text"), attachments }) });
