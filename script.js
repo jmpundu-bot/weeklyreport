@@ -169,11 +169,19 @@ document.addEventListener("keydown", event => { if (event.key === "Escape" && do
 function openDashboard(view) {
   const admin = signedInUser?.role === "admin";
   const lineManager = Boolean(signedInUser?.isLineManager);
+  const viewLabels = {
+    weekly: "Writing Weekly Report", reports: "Submitted Reports", assigned: "Deadline Activities",
+    community: "Community Engagement", "manager-reports": "Review and Comment on Reports",
+    "manager-activities": "Activity Assignment and Deadline Management",
+    "admin-users": "Manage User Accounts", "admin-holidays": "Public Holiday Management"
+  };
   const allowed = admin
     ? ["admin-users", "admin-holidays", "community", ...(lineManager ? ["manager-reports", "manager-activities"] : [])]
     : ["weekly", "reports", "assigned", "community", ...(lineManager ? ["manager-reports", "manager-activities"] : [])];
   if (!allowed.includes(view)) return;
   activeDashboard = view;
+  document.getElementById("activeDashboardTitle").textContent = viewLabels[view];
+  document.getElementById("activeDashboardTitle").classList.remove("is-mission-slogan");
   if (activityNotificationTimer) clearInterval(activityNotificationTimer);
   activityNotificationTimer = null;
   document.getElementById("dashboardHome").hidden = true;
@@ -223,6 +231,8 @@ function showDashboard(user) {
   pageShell.hidden = true;
   document.querySelector(".admin-content").hidden = false;
   document.getElementById("dashboardHome").hidden = false;
+  document.getElementById("activeDashboardTitle").textContent = "To tackle poverty, inequality, and injustice through girls' education and women's leadership.";
+  document.getElementById("activeDashboardTitle").classList.add("is-mission-slogan");
   document.getElementById("dashboardWelcome").textContent = "Welcome, " + user.fullName;
   document.getElementById("globalUserName").textContent = user.fullName;
   document.getElementById("globalUserEmail").textContent = user.email;
