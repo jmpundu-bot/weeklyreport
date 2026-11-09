@@ -17,7 +17,11 @@ body {
   margin: 0;
   padding: 32px 18px;
   color: var(--ink);
-  background: #622577;
+  background-color: #294530;
+  background-image: linear-gradient(rgba(18, 30, 20, .34), rgba(18, 30, 20, .34)), url("Mapalo-1193352-Secondary-Mpika-ZAM-09-Oct-2023_Catherine-Wood_IMG_9908.jpg");
+  background-position: center;
+  background-size: cover;
+  background-attachment: fixed;
   font-family: "DM Sans", Arial, sans-serif;
 }
 [id] { scroll-margin-top: 1rem; }
@@ -301,6 +305,7 @@ footer { padding: 20px 0 0; text-align: center; color: #858b85; font-size: 11px;
 footer span { padding: 0 5px; color: var(--green); }
 
 @media (max-width: 720px) {
+  body { background-attachment: scroll; }
   .menu-toggle { top: 14px; left: 10px; }
   .dashboard-header { padding: 10px 12px 10px 66px; }
   .dashboard-header-main { grid-template-columns: minmax(0,1fr) minmax(0,1.2fr) minmax(48px,.65fr); gap: 8px; min-height: 68px; }
