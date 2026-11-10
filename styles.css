@@ -349,3 +349,7 @@ footer span { padding: 0 5px; color: var(--green); }
   .actions { flex-direction: column-reverse; }
   .btn { width: 100%; }
 }
+.dashboard-nav-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.nav-unread-count { display: inline-grid; min-width: 20px; height: 20px; padding: 0 6px; place-items: center; border-radius: 999px; color: #fff; background: #d92332; font-size: 11px; line-height: 1; }
+.nav-unread-count[hidden] { display: none; }
+.dashboard-nav-link.has-unread > span:first-child { color: #9d1724; }

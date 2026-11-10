@@ -22,6 +22,41 @@ const departments = ['IT', 'MERL', 'Programmes', 'Finance', 'People & Culture'];
 const reportDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const reportStatuses = ['Not Started', 'In Progress', 'Completed', 'On Hold', 'Not Applicable'];
 const reportFields = ['activity', 'action', 'dateBy', 'progressUpdate', 'followUpAction', 'comments'];
+function notificationsForUser(user) {
+  const result = [];
+  const add = (section, id, label) => result.push({ id: `${section}:${id}`, section, label });
+  const managedUsers = new Set(db.users.filter(person => person.role === 'user' && person.lineManagerId === user.id && person.active !== false).map(person => person.id));
+  for (const post of db.communityPosts) {
+    if (post.authorId !== user.id) add('community', `post:${post.id}`, 'New community post');
+    for (const comment of post.comments || []) {
+      if (comment.authorId !== user.id) add('community', `comment:${comment.id}`, 'New community comment');
+      for (const reply of comment.replies || []) if (reply.authorId !== user.id) add('community', `reply:${reply.id}`, 'New community reply');
+    }
+  }
+  if (user.role === 'user') {
+    for (const activity of db.activities.filter(item => item.assigneeIds.includes(user.id) && item.lineManagerId === user.lineManagerId)) {
+      add('assigned', `assigned:${activity.id}:${activity.createdAt}`, 'Assigned activity');
+      if (activity.updatedAt) add('assigned', `changed:${activity.id}:${activity.updatedAt}`, 'Activity or deadline changed');
+      for (const update of activity.updates || []) if (update.recipientId === user.id && update.authorId !== user.id) add('assigned', `update:${update.id}`, 'Line Manager activity update');
+    }
+    for (const report of db.reports.filter(item => item.userId === user.id)) for (const feedback of report.feedback || []) {
+      if (feedback.sentAt) add('reports', `feedback:${feedback.id}`, 'Line Manager feedback');
+      for (const reply of feedback.replies || []) if (reply.authorId !== user.id) add('reports', `feedback-reply:${reply.id}`, 'Feedback reply');
+    }
+  }
+  if (['user', 'admin'].includes(user.role) && managedUsers.size) {
+    for (const report of db.reports.filter(item => managedUsers.has(item.userId))) {
+      add('manager-reports', `report:${report.id}:${report.submittedAt}`, 'Submitted report');
+      for (const feedback of report.feedback || []) for (const reply of feedback.replies || []) if (reply.authorId !== user.id) add('manager-reports', `manager-reply:${reply.id}`, 'Reply to your feedback');
+    }
+    for (const activity of db.activities.filter(item => item.lineManagerId === user.id)) {
+      add('manager-activities', `created:${activity.id}:${activity.createdAt}`, 'Activity created');
+      if (activity.updatedAt) add('manager-activities', `changed:${activity.id}:${activity.updatedAt}`, 'Activity updated');
+      for (const update of activity.updates || []) if (managedUsers.has(update.authorId) && update.authorId !== user.id) add('manager-activities', `progress:${update.id}`, 'User activity update');
+    }
+  }
+  return result;
+}
 const emptyDatabase = () => ({ users: [], reports: [], activities: [], drafts: [], publicHolidays: [], communityPosts: [], sessions: [] });
 let db = emptyDatabase();
 let sql;
@@ -331,6 +366,23 @@ async function handleRequest(req, res) {
     const user = currentUser(req);
     if (req.method.startsWith('POST') && !['/api/login', '/api/logout'].includes(url.pathname) && req.headers.origin && req.headers.origin !== `http://${req.headers.host}` && req.headers.origin !== `https://${req.headers.host}`) return send(res, 403, { error: 'Request origin rejected.' });
     if (!user && url.pathname.startsWith('/api/')) return send(res, 401, { error: 'Please sign in.' });
+    if (req.method === 'GET' && url.pathname === '/api/notifications') {
+      const read = new Set(user.notificationsRead || []);
+      const unread = notificationsForUser(user).filter(item => !read.has(item.id));
+      const counts = Object.fromEntries([...new Set(unread.map(item => item.section))].map(section => [section, unread.filter(item => item.section === section).length]));
+      return send(res, 200, { counts, total: unread.length });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/notifications/read') {
+      const body = await readBody(req); const section = String(body.section || '');
+      const validSections = ['weekly', 'reports', 'assigned', 'community', 'manager-reports', 'manager-activities', 'admin-users', 'admin-holidays'];
+      if (!validSections.includes(section)) return send(res, 400, { error: 'Choose a valid dashboard.' });
+      const current = new Set(user.notificationsRead || []);
+      for (const item of notificationsForUser(user)) if (item.section === section) current.add(item.id);
+      user.notificationsRead = [...current]; await persist();
+      const unread = notificationsForUser(user).filter(item => !current.has(item.id));
+      const counts = Object.fromEntries([...new Set(unread.map(item => item.section))].map(key => [key, unread.filter(item => item.section === key).length]));
+      return send(res, 200, { counts, total: unread.length });
+    }
     if (url.pathname === '/api/community/posts' && req.method === 'GET') {
       const activeUsers = new Map(db.users.filter(item => item.active !== false).map(item => [item.id, item]));
       const posts = db.communityPosts.filter(post => activeUsers.has(post.authorId)).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(post => ({ ...post, reactions: normalizeCommunityReactions(post.reactions), attachments: (post.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), authorName: activeUsers.get(post.authorId).fullName, comments: (post.comments || []).filter(comment => activeUsers.has(comment.authorId)).map(comment => ({ ...comment, authorName: activeUsers.get(comment.authorId).fullName, replies: (comment.replies || []).filter(reply => activeUsers.has(reply.authorId)).map(reply => ({ ...reply, authorName: activeUsers.get(reply.authorId).fullName })) })) }));

@@ -23,26 +23,28 @@ let draftWeek = "";
 let draftSaveTimer = null;
 let loadingDraft = false;
 let publicHolidayMap = new Map();
-let activityNotificationKeys = [];
-let activityNotificationTimer = null;
-
-function activityNotificationStorageKey() { return `seen-activity-updates-${signedInUser?.id || ""}`; }
-function updateActivityNotification(activities) {
-  const incoming = activities.flatMap(activity => [
-    `assigned:${activity.id}`,
-    ...(activity.updates || []).filter(update => update.authorId !== signedInUser?.id).map(update => `update:${update.id}`)
-  ]);
-  activityNotificationKeys = incoming;
-  let seen = [];
-  try { seen = JSON.parse(localStorage.getItem(activityNotificationStorageKey()) || "[]"); } catch { /* Treat unread updates as new if storage is unavailable. */ }
-  document.getElementById("activityUpdateIndicator").hidden = !incoming.some(key => !seen.includes(key));
+let notificationTimer = null;
+async function refreshNotifications() {
+  if (!signedInUser) return;
+  try {
+    const { counts = {}, total = 0 } = await api("/api/notifications");
+    const indicator = document.getElementById("activityUpdateIndicator");
+    indicator.hidden = total === 0;
+    indicator.title = total ? total + " unread update" + (total === 1 ? "" : "s") : "No unread updates";
+    indicator.setAttribute("aria-label", total ? total + " unread updates" : "No unread updates");
+    document.querySelectorAll(".dashboard-nav-link").forEach(button => {
+      const count = counts[button.dataset.navDashboard] || 0;
+      const badge = button.querySelector(".nav-unread-count");
+      badge.textContent = count ? String(count) : "";
+      badge.hidden = count === 0;
+      button.classList.toggle("has-unread", count > 0);
+    });
+  } catch { /* Keep the last known state during transient network errors. */ }
 }
-function markActivityNotificationsSeen() {
-  try { localStorage.setItem(activityNotificationStorageKey(), JSON.stringify(activityNotificationKeys)); } catch { /* The indicator can still be cleared for this visit. */ }
-  const indicator = document.getElementById("activityUpdateIndicator");
-  if (indicator) indicator.hidden = true;
+async function markDashboardNotificationsRead(section) {
+  try { await api("/api/notifications/read", { method: "POST", body: JSON.stringify({ section }) }); }
+  finally { await refreshNotifications(); }
 }
-
 async function api(url, options = {}) {
   const response = await fetch(url, { credentials: "same-origin", ...options, headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers } });
   const responseText = await response.text();
@@ -142,7 +144,7 @@ function buildDashboardNavigation(user) {
     ["Community Engagement", "community"],
     ...(user.isLineManager ? [["Review and Comment on Reports", "manager-reports"], ["Activity Assignment and Deadline Management", "manager-activities"]] : [])
   ];
-  document.getElementById("dashboardNav").innerHTML = choices.map(([label, view]) => '<button type="button" class="dashboard-nav-link" data-nav-dashboard="' + view + '">' + label + '</button>').join("");
+  document.getElementById("dashboardNav").innerHTML = choices.map(([label, view]) => '<button type="button" class="dashboard-nav-link" data-nav-dashboard="' + view + '"><span>' + label + '</span><span class="nav-unread-count" aria-label="Unread updates" hidden></span></button>').join("");
 }
 function setNavigationOpen(open) {
   const root = document.getElementById("appNavigation");
@@ -180,10 +182,9 @@ function openDashboard(view) {
     : ["weekly", "reports", "assigned", "community", ...(lineManager ? ["manager-reports", "manager-activities"] : [])];
   if (!allowed.includes(view)) return;
   activeDashboard = view;
+  markDashboardNotificationsRead(view);
   document.getElementById("activeDashboardTitle").textContent = viewLabels[view];
   document.getElementById("activeDashboardTitle").classList.remove("is-mission-slogan");
-  if (activityNotificationTimer) clearInterval(activityNotificationTimer);
-  activityNotificationTimer = null;
   document.getElementById("dashboardHome").hidden = true;
   document.getElementById("adminScreen").hidden = !admin;
   document.querySelector(".admin-content").hidden = !admin || view === "manager-reports" || view === "manager-activities";
@@ -205,10 +206,8 @@ function openDashboard(view) {
     document.getElementById("weekCommencing").value = currentMonday();
     startReportDraft();
   } else if (view === "reports") loadMyReports();
-  else if (view === "assigned") {
-    loadMyActivities();
-    activityNotificationTimer = setInterval(loadMyActivities, 30000);
-  } else if (view === "community") loadCommunityFeed(admin ? "admin" : "user");
+  else if (view === "assigned") loadMyActivities();
+  else if (view === "community") loadCommunityFeed(admin ? "admin" : "user");
   else if (view === "manager-reports") {
     if (admin) loadManagerReports("adminManagerUsers", "adminManagerReports", "adminSelectedUserHeading", "adminManagerMessage");
     else loadManagerReports();
@@ -245,12 +244,11 @@ function showDashboard(user) {
   document.getElementById("appNavigation").hidden = false;
   setNavigationOpen(false);
   buildDashboardNavigation(user);
-  if (activityNotificationTimer) clearInterval(activityNotificationTimer);
-  activityNotificationTimer = null;
-  const indicator = document.getElementById("activityUpdateIndicator");
-  if (indicator) indicator.hidden = true;
+  if (notificationTimer) clearInterval(notificationTimer);
+  notificationTimer = setInterval(refreshNotifications, 15000);
+  refreshNotifications();
 }
-function showLogin() { signedInUser = null; activeDashboard = ""; document.getElementById("dashboardHeader").hidden = true; document.getElementById("dashboardHome").hidden = true; document.getElementById("appNavigation").hidden = true; setNavigationOpen(false); if (activityNotificationTimer) clearInterval(activityNotificationTimer); activityNotificationTimer = null; loginScreen.hidden = false; pageShell.hidden = true; adminScreen.hidden = true; loginForm.hidden = true; document.querySelector(".login-options").hidden = false; loginMessage.textContent = ""; }
+function showLogin() { signedInUser = null; activeDashboard = ""; document.getElementById("dashboardHeader").hidden = true; document.getElementById("dashboardHome").hidden = true; document.getElementById("appNavigation").hidden = true; setNavigationOpen(false); if (notificationTimer) clearInterval(notificationTimer); notificationTimer = null; loginScreen.hidden = false; pageShell.hidden = true; adminScreen.hidden = true; loginForm.hidden = true; document.querySelector(".login-options").hidden = false; loginMessage.textContent = ""; }
 document.querySelectorAll("[data-login-role]").forEach(button => button.addEventListener("click", () => {
   loginRole = button.dataset.loginRole; loginForm.hidden = false; document.querySelector(".login-options").hidden = true;
   document.getElementById("loginHeading").textContent = `${loginRole === "admin" ? "Admin" : "User"} Dashboard sign in`;
@@ -522,7 +520,6 @@ async function loadMyActivities() {
   const container = document.getElementById("myActivities");
   try {
     const { activities } = await api("/api/my/activities");
-    updateActivityNotification(activities);
     container.innerHTML = activities.map(activity => {
       const state = deadlineState(activity.deadline, activity.status === "Completed");
       return `<article class="manager-report-card activity-card"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · ${escapeHtml(activity.status)} · ${state}</p></div><span class="report-date">Assigned ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header><details class="activity-edit-details"><summary>Edit activity details</summary><form class="activity-edit-form" data-update-activity="${escapeHtml(activity.id)}"><label>Activity title<input name="title" maxlength="200" value="${escapeHtml(activity.title)}" required></label><label>Instructions<textarea name="description" maxlength="5000" required>${escapeHtml(activity.description)}</textarea></label><label>Deadline<input name="deadline" type="date" value="${escapeHtml(activity.deadline)}" required></label><fieldset><legend>Assigned users</legend><div class="assignee-options">${assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}" ${activity.assigneeIds.includes(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("")}</div></fieldset><input type="hidden" name="previousDeadline" value="${escapeHtml(activity.deadline)}"><button class="btn btn-secondary" type="submit">Save activity changes</button></form></details><p class="activity-description">${escapeHtml(activity.description)}</p><div class="activity-updates">${activityUpdatesMarkup(activity.updates)}</div><label>Progress update<textarea data-activity-update="${escapeHtml(activity.id)}" maxlength="5000" placeholder="Share progress or explain a delay..."></textarea></label><div class="activity-update-controls"><label>Status<select data-activity-status="${escapeHtml(activity.id)}"><option${activity.status === "Not Started" ? " selected" : ""}>Not Started</option><option${activity.status === "In Progress" ? " selected" : ""}>In Progress</option><option${activity.status === "On Hold" ? " selected" : ""}>On Hold</option><option${activity.status === "Completed" ? " selected" : ""}>Completed</option></select></label><button type="button" class="btn btn-secondary" data-save-activity="${escapeHtml(activity.id)}">Send update</button></div></article>`;
@@ -534,7 +531,6 @@ async function loadMyActivities() {
     }));
   } catch (error) { showMessage(document.getElementById("myActivitiesMessage"), error.message); }
 }
-document.getElementById("my-activities-heading").closest("section").addEventListener("click", markActivityNotificationsSeen);
 async function loadManagerActivities(prefix) {
   const admin = prefix === "admin"; const form = document.getElementById(admin ? "adminActivityForm" : "managerActivityForm");
   const usersNode = document.getElementById(admin ? "adminActivityAssignees" : "managerActivityAssignees");
