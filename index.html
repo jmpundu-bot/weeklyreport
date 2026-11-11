@@ -65,6 +65,7 @@
       <form id="createUserForm" class="user-create-form">
         <label>Full name<input name="fullName" required></label>
         <label>Email address<input name="email" type="email" required></label>
+        <label>Role Selection<select name="accountRole" required><option value="user">User</option><option value="senior_user">Senior User</option></select></label>
         <label>Department<select name="department" required><option value="">Select department</option><option value="IT">IT</option><option value="MERL">MERL</option><option value="Programmes">Programmes</option><option value="Finance">Finance</option><option value="People &amp; Culture">People &amp; Culture</option></select></label>
         <label>Position<input name="designation"></label>
         <label>Temporary password<input name="password" type="password" minlength="10" required></label>
@@ -72,7 +73,7 @@
         <button class="btn btn-primary" type="submit">Create user</button>
       </form>
       <p id="adminMessage" class="form-message" role="status" aria-live="polite"></p>
-      <details class="admin-users-list"><summary>Users</summary><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Position</th><th>Line Manager</th><th>Account actions</th></tr></thead><tbody id="usersTable"></tbody></table></div></details>
+      <details class="admin-users-list"><summary>Users</summary><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Department</th><th>Position</th><th>Line Manager</th><th>Account actions</th></tr></thead><tbody id="usersTable"></tbody></table></div></details>
       </section>
       <section id="adminHolidaysSection" class="holiday-admin-section" aria-labelledby="holiday-admin-heading">
         <h2 id="holiday-admin-heading">Manage public holidays</h2>

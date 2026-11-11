@@ -43,6 +43,10 @@ function notificationsForUser(user) {
       if (feedback.sentAt) add('reports', `feedback:${feedback.id}`, 'Line Manager feedback');
       for (const reply of feedback.replies || []) if (reply.authorId !== user.id) add('reports', `feedback-reply:${reply.id}`, 'Feedback reply');
     }
+    if (user.accountRole === 'senior_user') for (const report of db.reports) {
+      add('manager-reports', `report:${report.id}:${report.submittedAt}`, 'Submitted report');
+      for (const feedback of report.feedback || []) for (const reply of feedback.replies || []) if (reply.authorId !== user.id) add('manager-reports', `manager-reply:${reply.id}`, 'Reply to your feedback');
+    }
   }
   if (['user', 'admin'].includes(user.role) && managedUsers.size) {
     for (const report of db.reports.filter(item => managedUsers.has(item.userId))) {
@@ -312,9 +316,11 @@ function queueEmailNotifications(recipients, notice) {
 
 function publicUser(user) {
   const { password, ...safe } = user;
+  if (safe.role === 'user' && !['user', 'senior_user'].includes(safe.accountRole)) safe.accountRole = 'user';
   safe.isLineManager = db.users.some(item => item.lineManagerId === user.id) || db.reports.some(report => report.lineManagerId === user.id);
   return safe;
 }
+const isSeniorUser = user => user.role === 'user' && user.accountRole === 'senior_user';
 function normalizeCommunityReactions(reactions = {}) {
   const normalized = { ...(reactions || {}) };
   for (const [oldKey, emoji] of [["like", "\u{1F44D}"], ["celebrate", "\u{1F389}"], ["support", "\u{1F64F}"]]) {
@@ -553,14 +559,16 @@ async function handleRequest(req, res) {
         const email = String(body.email || '').trim().toLowerCase();
         const password = String(body.password || '');
         const department = String(body.department || '').trim();
+        const accountRole = String(body.accountRole || 'user').trim();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return send(res, 400, { error: 'Enter a valid email address.' });
+        if (!['user', 'senior_user'].includes(accountRole)) return send(res, 400, { error: 'Select User or Senior User.' });
         if (!departments.includes(department)) return send(res, 400, { error: 'Select a department from the list.' });
         if (password.length < 10) return send(res, 400, { error: 'Password must contain at least 10 characters.' });
         if (db.users.some(item => item.email.toLowerCase() === email)) return send(res, 400, { error: 'That email address already has an account. Use a different email.' });
         const lineManagerId = String(body.lineManagerId || '').trim() || null;
         if (!lineManagerId) return send(res, 400, { error: 'Assign a Line Manager before creating this account.' });
         if (!db.users.some(item => item.id === lineManagerId && ['user', 'admin'].includes(item.role) && item.active !== false)) return send(res, 400, { error: 'Select an active account as Line Manager.' });
-        const created = { id: crypto.randomUUID(), role: 'user', email, fullName: String(body.fullName || '').trim(), department, designation: String(body.designation || '').trim(), lineManagerId, active: true, password: await hashPassword(password) };
+        const created = { id: crypto.randomUUID(), role: 'user', accountRole, email, fullName: String(body.fullName || '').trim(), department, designation: String(body.designation || '').trim(), lineManagerId, active: true, password: await hashPassword(password) };
         db.users.push(created); await persist(); return send(res, 201, { user: publicUser(created) });
       }
       const match = url.pathname.match(/^\/api\/admin\/users\/([\w-]+)$/);
@@ -695,9 +703,9 @@ async function handleRequest(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/api/manager/reports') {
       if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
-      const assignedUsers = db.users.filter(item => item.role === 'user' && item.lineManagerId === user.id && item.active !== false).map(item => ({ id: item.id, fullName: item.fullName, email: item.email }));
+      const assignedUsers = db.users.filter(item => item.role === 'user' && (isSeniorUser(user) || (item.active !== false && item.lineManagerId === user.id))).map(item => ({ id: item.id, fullName: item.fullName, email: item.email }));
       const assignedIds = new Set(assignedUsers.map(item => item.id));
-      const reports = db.reports.filter(report => report.lineManagerId === user.id && assignedIds.has(report.userId)).map(report => {
+      const reports = db.reports.filter(report => assignedIds.has(report.userId) && (isSeniorUser(user) || report.lineManagerId === user.id)).map(report => {
         const author = db.users.find(item => item.id === report.userId);
         return { ...report, author: author ? { fullName: author.fullName, email: author.email, department: author.department } : null };
       });
@@ -706,7 +714,7 @@ async function handleRequest(req, res) {
     const feedbackMatch = url.pathname.match(/^\/api\/manager\/reports\/([\w-]+)\/feedback$/);
     if (req.method === 'POST' && feedbackMatch) {
       if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
-      const report = db.reports.find(item => item.id === feedbackMatch[1] && item.lineManagerId === user.id);
+      const report = db.reports.find(item => item.id === feedbackMatch[1] && (isSeniorUser(user) || item.lineManagerId === user.id));
       if (!report) return send(res, 404, { error: 'Assigned report not found.' });
       const body = await readBody(req); const text = String(body.feedback || '').trim();
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter feedback of 1 to 5,000 characters.' });
@@ -717,7 +725,7 @@ async function handleRequest(req, res) {
     const sendFeedbackMatch = url.pathname.match(/^\/api\/manager\/reports\/([\w-]+)\/feedback\/([\w-]+)\/send$/);
     if (req.method === 'POST' && sendFeedbackMatch) {
       if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
-      const report = db.reports.find(item => item.id === sendFeedbackMatch[1] && item.lineManagerId === user.id);
+      const report = db.reports.find(item => item.id === sendFeedbackMatch[1] && (isSeniorUser(user) || item.lineManagerId === user.id));
       const feedback = report?.feedback?.find(item => item.id === sendFeedbackMatch[2]);
       if (!feedback) return send(res, 404, { error: 'Feedback draft not found.' });
       const newlySent = !feedback.sentAt;

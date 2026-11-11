@@ -132,6 +132,7 @@ function renderReportDays(activities = []) {
   return activities.map((item, index) => `<article class="report-day-detail"><div class="day-top"><span class="day-name">${escapeHtml(item.day || days[index] || "Day")}</span><span class="status-pill">${escapeHtml(item.status || "")}</span></div><div class="daily-table-scroll"><table class="daily-report-table report-detail-table"><thead><tr>${reportColumns.map(([, title]) => `<th scope="col">${title}</th>`).join("")}</tr></thead><tbody><tr>${reportColumns.map(([key]) => `<td>${escapeHtml(item[key] ?? (key === "activity" ? item.activity : "") ?? "")}</td>`).join("")}</tr></tbody></table></div></article>`).join("");
 }
 function buildDashboardNavigation(user) {
+  const seniorUser = user.accountRole === "senior_user";
   const choices = user.role === "admin" ? [
     ["Manage User Accounts", "admin-users"],
     ["Public Holiday Management", "admin-holidays"],
@@ -142,7 +143,8 @@ function buildDashboardNavigation(user) {
     ["Submitted Reports", "reports"],
     ["Deadline Activities", "assigned"],
     ["Community Engagement", "community"],
-    ...(user.isLineManager ? [["Review and Comment on Reports", "manager-reports"], ["Activity Assignment and Deadline Management", "manager-activities"]] : [])
+    ...(user.isLineManager || seniorUser ? [["Review and Comment on Reports", "manager-reports"]] : []),
+    ...(user.isLineManager ? [["Activity Assignment and Deadline Management", "manager-activities"]] : [])
   ];
   document.getElementById("dashboardNav").innerHTML = choices.map(([label, view]) => '<button type="button" class="dashboard-nav-link" data-nav-dashboard="' + view + '"><span>' + label + '</span><span class="nav-unread-count" aria-label="Unread updates" hidden></span></button>').join("");
 }
@@ -171,6 +173,7 @@ document.addEventListener("keydown", event => { if (event.key === "Escape" && do
 function openDashboard(view) {
   const admin = signedInUser?.role === "admin";
   const lineManager = Boolean(signedInUser?.isLineManager);
+  const seniorUser = signedInUser?.accountRole === "senior_user";
   const viewLabels = {
     weekly: "Writing Weekly Report", reports: "Submitted Reports", assigned: "Deadline Activities",
     community: "Community Engagement", "manager-reports": "Review and Comment on Reports",
@@ -179,7 +182,7 @@ function openDashboard(view) {
   };
   const allowed = admin
     ? ["admin-users", "admin-holidays", "community", ...(lineManager ? ["manager-reports", "manager-activities"] : [])]
-    : ["weekly", "reports", "assigned", "community", ...(lineManager ? ["manager-reports", "manager-activities"] : [])];
+    : ["weekly", "reports", "assigned", "community", ...(lineManager || seniorUser ? ["manager-reports"] : []), ...(lineManager ? ["manager-activities"] : [])];
   if (!allowed.includes(view)) return;
   activeDashboard = view;
   markDashboardNotificationsRead(view);
@@ -270,8 +273,8 @@ async function loadUsers() {
     fillManagerOptions(lineManagers);
     tbody.innerHTML = users.map(user => {
       const manager = lineManagers.find(item => item.id === user.lineManagerId);
-      return `<tr><td>${escapeHtml(user.fullName)}</td><td>${escapeHtml(user.email)}</td><td>${escapeHtml(user.department)}</td><td>${escapeHtml(user.designation)}</td><td>${manager ? escapeHtml(manager.fullName) : "—"}</td><td><button class="btn btn-secondary" data-edit="${user.id}">Edit account</button> <button class="btn btn-secondary" data-active="${user.id}">${user.active ? "Disable" : "Enable"}</button> <button class="btn btn-secondary" data-delete="${user.id}">Delete</button></td></tr>`;
-    }).join("") || '<tr><td colspan="6">No user accounts yet.</td></tr>';
+      return `<tr><td>${escapeHtml(user.fullName)}</td><td>${escapeHtml(user.email)}</td><td>${user.accountRole === "senior_user" ? "Senior User" : "User"}</td><td>${escapeHtml(user.department)}</td><td>${escapeHtml(user.designation)}</td><td>${manager ? escapeHtml(manager.fullName) : "—"}</td><td><button class="btn btn-secondary" data-edit="${user.id}">Edit account</button> <button class="btn btn-secondary" data-active="${user.id}">${user.active ? "Disable" : "Enable"}</button> <button class="btn btn-secondary" data-delete="${user.id}">Delete</button></td></tr>`;
+    }).join("") || '<tr><td colspan="7">No user accounts yet.</td></tr>';
     tbody.querySelectorAll("[data-edit]").forEach(button => button.addEventListener("click", () => editUser(users.find(user => user.id === button.dataset.edit), lineManagers)));
     tbody.querySelectorAll("[data-active]").forEach(button => button.addEventListener("click", async () => { const target = users.find(item => item.id === button.dataset.active); try { await api(`/api/admin/users/${target.id}`, { method: "PUT", body: JSON.stringify({ active: !target.active }) }); await loadUsers(); } catch (error) { showMessage(document.getElementById("adminMessage"), error.message); } }));
     tbody.querySelectorAll("[data-delete]").forEach(button => button.addEventListener("click", async () => { const target = users.find(item => item.id === button.dataset.delete); if (!confirm(`Delete ${target.email} and their saved reports?`)) return; try { await api(`/api/admin/users/${target.id}`, { method: "DELETE" }); await loadUsers(); } catch (error) { showMessage(document.getElementById("adminMessage"), error.message); } }));
