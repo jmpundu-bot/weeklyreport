@@ -502,10 +502,18 @@ async function loadManagerReports(usersListId = "managerUsers", containerId = "m
   const container = document.getElementById(containerId);
   try {
     const { assignedUsers, reports } = await api("/api/manager/reports");
-    if (!assignedUsers.some(item => item.id === selectedUserId)) selectedUserId = "";
-    usersList.innerHTML = assignedUsers.map(item => `<button type="button" class="manager-user-link${item.id === selectedUserId ? " is-selected" : ""}" data-manager-user="${escapeHtml(item.id)}">${escapeHtml(item.fullName)}</button>`).join("") || '<p class="empty-reports">No users are currently assigned to you.</p>';
-    usersList.querySelectorAll("[data-manager-user]").forEach(button => button.addEventListener("click", () => loadManagerReports(usersListId, containerId, headingId, messageId, button.dataset.managerUser)));
-    renderSelectedManagerReports(selectedUserId, assignedUsers, reports, containerId, headingId, messageId, usersListId);
+    const seniorUserView = signedInUser?.accountRole === "senior_user" && usersListId === "managerUsers";
+    if (seniorUserView) {
+      const departments = [...new Set(assignedUsers.map(item => item.department).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      if (!departments.includes(selectedUserId.replace(/^department:/, "")) || !selectedUserId.startsWith("department:")) selectedUserId = "";
+      usersList.innerHTML = departments.map(department => `<button type="button" class="manager-user-link${selectedUserId === `department:${department}` ? " is-selected" : ""}" data-manager-department="${escapeHtml(department)}">${escapeHtml(department)}</button>`).join("") || '<p class="empty-reports">No departments found.</p>';
+      usersList.querySelectorAll("[data-manager-department]").forEach(button => button.addEventListener("click", () => loadManagerReports(usersListId, containerId, headingId, messageId, `department:${button.dataset.managerDepartment}`)));
+    } else {
+      if (!assignedUsers.some(item => item.id === selectedUserId)) selectedUserId = "";
+      usersList.innerHTML = assignedUsers.map(item => `<button type="button" class="manager-user-link${item.id === selectedUserId ? " is-selected" : ""}" data-manager-user="${escapeHtml(item.id)}">${escapeHtml(item.fullName)}</button>`).join("") || '<p class="empty-reports">No users are currently assigned to you.</p>';
+      usersList.querySelectorAll("[data-manager-user]").forEach(button => button.addEventListener("click", () => loadManagerReports(usersListId, containerId, headingId, messageId, button.dataset.managerUser)));
+    }
+    renderSelectedManagerReports(selectedUserId, assignedUsers, reports, containerId, headingId, messageId, usersListId, seniorUserView);
   } catch (error) { showMessage(document.getElementById(messageId), error.message); }
 }
 
@@ -565,19 +573,21 @@ async function loadManagerActivities(prefix) {
   } catch (error) { showMessage(messageNode, error.message); }
 }
 
-function renderSelectedManagerReports(selectedUserId, assignedUsers, reports, containerId, headingId, messageId, usersListId) {
+function renderSelectedManagerReports(selectedUserId, assignedUsers, reports, containerId, headingId, messageId, usersListId, seniorUserView = false) {
   const container = document.getElementById(containerId);
   const heading = document.getElementById(headingId);
+  const selectedDepartment = seniorUserView && selectedUserId.startsWith("department:") ? selectedUserId.slice("department:".length) : "";
   const selectedUser = assignedUsers.find(item => item.id === selectedUserId);
-  heading.textContent = selectedUser ? `${selectedUser.fullName}'s submitted reports` : "Select a user to review their reports.";
-  container.innerHTML = selectedUser ? reports.filter(report => report.userId === selectedUserId).map(report => `<article class="manager-report-card">
+  const selectedReports = selectedDepartment ? reports.filter(report => (report.author?.department || report.staff?.department) === selectedDepartment) : reports.filter(report => report.userId === selectedUserId);
+  heading.textContent = selectedDepartment ? `${selectedDepartment} department reports` : selectedUser ? `${selectedUser.fullName}'s submitted reports` : seniorUserView ? "Select a department to review its reports." : "Select a user to review their reports.";
+  container.innerHTML = (selectedDepartment || selectedUser) ? selectedReports.map(report => `<article class="manager-report-card">
       <header><div><h3>${escapeHtml(report.author?.fullName || report.staff.fullName)} <span>(${escapeHtml(report.author?.email || "Account removed")})</span></h3><p>${escapeHtml(report.author?.department || report.staff.department)} · Week commencing ${escapeHtml(report.staff.weekCommencing)}</p></div><span class="report-date">Submitted ${escapeHtml(new Date(report.submittedAt).toLocaleString())}</span></header>
       <div class="review-activities">${renderReportDays(report.activities)}</div>
       <div class="report-comments"><h4>Feedback and replies</h4>${(report.feedback || []).map(feedback => `<div class="feedback-thread"><p class="report-comment"><strong>${escapeHtml(feedback.authorName)}</strong> · ${escapeHtml(new Date(feedback.createdAt).toLocaleString())} · ${feedback.sentAt ? "Sent to user" : "Draft"}<br>${escapeHtml(feedback.text)}</p>${(feedback.replies || []).map(reply => `<p class="feedback-reply"><strong>Reply from ${escapeHtml(reply.authorName)}</strong> · ${escapeHtml(new Date(reply.createdAt).toLocaleString())}<br>${escapeHtml(reply.text)}</p>`).join("")}${feedback.sentAt ? "" : `<button type="button" class="btn btn-primary" data-send-feedback="${escapeHtml(report.id)}" data-feedback-id="${escapeHtml(feedback.id)}">Send feedback to user</button>`}</div>`).join("") || '<p class="empty-comments">No feedback drafted yet.</p>'}</div>
       <label>New feedback<textarea data-feedback-draft="${escapeHtml(report.id)}" maxlength="5000" placeholder="Write feedback for this report..."></textarea></label><button type="button" class="btn btn-secondary" data-create-feedback="${escapeHtml(report.id)}">Save feedback draft</button>
       <button type="button" class="btn btn-secondary" data-download-report="${escapeHtml(report.id)}">Download PDF</button>
     </article>`).join("") : "";
-  if (selectedUser && !reports.some(report => report.userId === selectedUserId)) container.innerHTML = '<p class="empty-reports">This user has not submitted any weekly reports yet.</p>';
+  if ((selectedDepartment || selectedUser) && !selectedReports.length) container.innerHTML = selectedDepartment ? '<p class="empty-reports">No reports have been submitted by users in this department yet.</p>' : '<p class="empty-reports">This user has not submitted any weekly reports yet.</p>';
     container.querySelectorAll("[data-create-feedback]").forEach(button => button.addEventListener("click", async () => {
       const reportId = button.dataset.createFeedback; const field = container.querySelector(`[data-feedback-draft="${reportId}"]`);
       try { await api(`/api/manager/reports/${reportId}/feedback`, { method: "POST", body: JSON.stringify({ feedback: field.value }) }); showMessage(document.getElementById(messageId), "Feedback draft saved. Send it when it is ready.", "success"); await loadManagerReports(usersListId, containerId, headingId, messageId, selectedUserId); }

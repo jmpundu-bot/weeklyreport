@@ -705,7 +705,7 @@ async function handleRequest(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/api/manager/reports') {
       if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
-      const assignedUsers = db.users.filter(item => item.role === 'user' && (isSeniorUser(user) || (item.active !== false && item.lineManagerId === user.id))).map(item => ({ id: item.id, fullName: item.fullName, email: item.email }));
+      const assignedUsers = db.users.filter(item => item.role === 'user' && (isSeniorUser(user) || (item.active !== false && item.lineManagerId === user.id))).map(item => ({ id: item.id, fullName: item.fullName, email: item.email, department: item.department }));
       const assignedIds = new Set(assignedUsers.map(item => item.id));
       const reports = db.reports.filter(report => assignedIds.has(report.userId) && (isSeniorUser(user) || report.lineManagerId === user.id)).map(report => {
         const author = db.users.find(item => item.id === report.userId);
