@@ -402,7 +402,9 @@ async function handleRequest(req, res) {
       const storedData = attachment.data || await readAssetDataUri(attachment.assetId);
       if (!storedData) return send(res, 404, { error: 'Attachment data not found.' });
       const bytes = Buffer.from(storedData.split(',')[1], 'base64');
-      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(attachment.name)}`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store' });
+      const mimeType = String(attachment.mimeType || '').toLowerCase();
+      const inlineImage = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mimeType);
+      res.writeHead(200, { 'Content-Type': inlineImage ? mimeType : 'application/octet-stream', 'Content-Length': bytes.length, 'Content-Disposition': `${inlineImage ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(attachment.name)}`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store' });
       return res.end(bytes);
     }
     if (url.pathname === '/api/community/posts' && req.method === 'POST') {
