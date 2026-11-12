@@ -46,7 +46,14 @@ async function markDashboardNotificationsRead(section) {
   finally { await refreshNotifications(); }
 }
 async function api(url, options = {}) {
-  const response = await fetch(url, { credentials: "same-origin", ...options, headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers } });
+  let response;
+  try {
+    response = await fetch(url, { credentials: "same-origin", ...options, headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers } });
+  } catch (error) {
+    if (window.location.protocol === "file:") throw new Error("The portal was opened as a local file. Start the app with `npm start`, then open http://localhost:3000.");
+    if (error instanceof TypeError) throw new Error(`Could not connect to the portal API at ${window.location.origin}${url}. Check that the app server or deployment is online, then reload.`);
+    throw error;
+  }
   const responseText = await response.text();
   let result;
   try { result = responseText ? JSON.parse(responseText) : {}; }
@@ -606,7 +613,8 @@ function renderSelectedManagerReports(selectedUserId, assignedUsers, reports, co
   const heading = document.getElementById(headingId);
   const selectedDepartment = seniorUserView && selectedUserId.startsWith("department:") ? selectedUserId.slice("department:".length) : "";
   const selectedUser = assignedUsers.find(item => item.id === selectedUserId);
-  const selectedReports = selectedDepartment ? reports.filter(report => (report.staff?.department || report.author?.department) === selectedDepartment) : reports.filter(report => report.userId === selectedUserId);
+  const selectedReports = (selectedDepartment ? reports.filter(report => (report.staff?.department || report.author?.department) === selectedDepartment) : reports.filter(report => report.userId === selectedUserId))
+    .sort((a, b) => Date.parse(b.submittedAt || 0) - Date.parse(a.submittedAt || 0));
   heading.textContent = selectedDepartment ? `${selectedDepartment} department reports` : selectedUser ? `${selectedUser.fullName}'s submitted reports` : seniorUserView ? "Select a department to review its reports." : headUserView ? "Select a department user to review their submissions." : "Select a user to review their reports.";
   container.innerHTML = (selectedDepartment || selectedUser) ? selectedReports.map(report => `<article class="manager-report-card">
       <header><div><h3>${escapeHtml(report.author?.fullName || report.staff.fullName)} <span>(${escapeHtml(report.author?.email || "Account removed")})</span></h3><p>${escapeHtml(report.author?.department || report.staff.department)} · Week commencing ${escapeHtml(report.staff.weekCommencing)}</p></div><span class="report-date">Submitted ${escapeHtml(new Date(report.submittedAt).toLocaleString())}</span></header>
@@ -637,7 +645,7 @@ async function loadMyReports() {
   const container = document.getElementById("myReports");
   try {
     const { reports } = await api("/api/my/reports");
-    reports.sort((a, b) => String(b.staff.weekCommencing).localeCompare(String(a.staff.weekCommencing)) || String(b.submittedAt).localeCompare(String(a.submittedAt)));
+    reports.sort((a, b) => Date.parse(b.submittedAt || 0) - Date.parse(a.submittedAt || 0));
     container.innerHTML = reports.map(report => `<details class="manager-report-card submitted-report-card"><summary><span><strong>Week Commencing: ${escapeHtml(formatWeekCommencing(report.staff.weekCommencing))}</strong><small>Submitted ${escapeHtml(new Date(report.submittedAt).toLocaleString())}</small></span><span class="report-open-hint">View report</span></summary><div class="submitted-report-content"><div class="review-activities">${renderReportDays(report.activities)}</div><div class="report-comments"><h4>Line Manager feedback</h4>${(report.feedback || []).map(feedback => `<div class="feedback-thread"><p class="report-comment"><strong>${escapeHtml(feedback.authorName)}</strong> · ${escapeHtml(new Date(feedback.sentAt).toLocaleString())}<br>${escapeHtml(feedback.text)}</p>${(feedback.replies || []).map(reply => `<p class="feedback-reply"><strong>Your reply</strong> · ${escapeHtml(new Date(reply.createdAt).toLocaleString())}<br>${escapeHtml(reply.text)}</p>`).join("")}<label>Reply<textarea data-reply-text="${escapeHtml(feedback.id)}" maxlength="5000" placeholder="Reply to this feedback..."></textarea></label><button type="button" class="btn btn-secondary" data-reply-report="${escapeHtml(report.id)}" data-reply-feedback="${escapeHtml(feedback.id)}">Send reply</button></div>`).join("") || '<p class="empty-comments">No feedback yet.</p>'}</div><button type="button" class="btn btn-secondary" data-download-report="${escapeHtml(report.id)}">Download PDF</button></div></details>`).join("") || '<p class="empty-reports">You have not submitted any weekly reports yet.</p>';
     container.querySelectorAll("[data-reply-report]").forEach(button => button.addEventListener("click", async () => {
       const reportId = button.dataset.replyReport; const feedbackId = button.dataset.replyFeedback; const field = container.querySelector(`[data-reply-text="${feedbackId}"]`);
@@ -725,4 +733,4 @@ form.addEventListener("submit", async event => {
 });
 form.addEventListener("reset", () => { message.className = "form-message"; message.textContent = ""; });
 setInterval(() => { if (signedInUser) { document.getElementById("globalCurrentDate").textContent = currentPortalDate(); document.getElementById("globalCurrentDate").dateTime = new Date().toISOString().slice(0,10); } if (activeDashboard === "weekly") refreshPublicHolidays().catch(() => {}); else if (activeDashboard === "assigned") loadMyActivities(); else if (activeDashboard === "community") loadCommunityFeed(signedInUser?.role === "admin" ? "admin" : "user"); else if (activeDashboard === "manager-activities") loadManagerActivities(signedInUser?.role === "admin" ? "admin" : "user"); }, 60000);
-(async () => { try { const { user } = await api("/api/session"); if (user) { showDashboard(user); openDashboardFromNotificationLink(); } else showLogin(); } catch { showLogin(); } })();
+(async () => { try { const { user } = await api("/api/session"); if (user) { showDashboard(user); openDashboardFromNotificationLink(); } else showLogin(); } catch (error) { showLogin(); showMessage(loginMessage, error.message); } })();
