@@ -65,7 +65,7 @@
       <form id="createUserForm" class="user-create-form">
         <label>Full name<input name="fullName" required></label>
         <label>Email address<input name="email" type="email" required></label>
-        <label>Role Selection<select name="accountRole" required><option value="user">User</option><option value="senior_user">Senior User</option></select></label>
+        <label>Role Selection<select name="accountRole" required><option value="user">User</option><option value="senior_user">Senior</option><option value="head">Head</option></select></label>
         <label>Department<select name="department" required><option value="">Select department</option><option value="IT">IT</option><option value="MERL">MERL</option><option value="Programmes">Programmes</option><option value="Finance">Finance</option><option value="People &amp; Culture">People &amp; Culture</option></select></label>
         <label>Position<input name="designation"></label>
         <label>Temporary password<input name="password" type="password" minlength="10" required></label>
@@ -94,7 +94,7 @@
       <p id="adminManagerMessage" class="form-message" role="status" aria-live="polite"></p>
     </section>
     <section id="adminActivitySection" class="manager-review-section" aria-label="Line Manager activities" hidden>
-      <div class="section-heading"><div><h2>Activities and deadlines</h2><p>Create activities for the users assigned to you and track their updates.</p></div></div>
+      <div class="section-heading"><div><h2>Activities and deadlines</h2><p>Create activities within your oversight scope, monitor progress, and provide guidance.</p></div></div>
       <form id="adminActivityForm" class="activity-create-form"><label>Activity title<input name="title" maxlength="200" required></label><label>Instructions<textarea name="description" maxlength="5000" required></textarea></label><label>Deadline<input name="deadline" type="date" required></label><fieldset><legend>Assign to</legend><div id="adminActivityAssignees" class="assignee-options"></div></fieldset><button class="btn btn-primary" type="submit">Create activity</button></form>
       <p id="adminActivityMessage" class="form-message" role="status" aria-live="polite"></p><div id="adminActivities" class="manager-reports"></div>
     </section>
@@ -161,7 +161,7 @@
       <p id="myReportsMessage" class="form-message" role="status" aria-live="polite"></p>
     </section>
     <section id="myActivitiesSection" class="submitted-reports-section" aria-labelledby="my-activities-heading">
-      <div class="section-heading"><div><h2 id="my-activities-heading">Deadline Activities</h2><p>Deadlines and progress updates from your Line Manager.</p></div></div>
+      <div class="section-heading"><div><h2 id="my-activities-heading">Deadline Activities</h2><p>Review activities assigned to you, track deadlines, and share progress with your supervisor.</p></div></div>
       <div id="myActivities" class="manager-reports"></div><p id="myActivitiesMessage" class="form-message" role="status" aria-live="polite"></p>
     </section>
 
@@ -172,7 +172,7 @@
       <p id="managerMessage" class="form-message" role="status" aria-live="polite"></p>
     </section>
     <section id="managerActivitySection" class="manager-review-section" hidden>
-      <div class="section-heading"><div><h2>Activities and deadlines</h2><p>Create activities for the users assigned to you and track their updates.</p></div></div>
+      <div class="section-heading"><div><h2>Activities and deadlines</h2><p>Create activities within your oversight scope, monitor progress, and provide guidance.</p></div></div>
       <form id="managerActivityForm" class="activity-create-form"><label>Activity title<input name="title" maxlength="200" required></label><label>Instructions<textarea name="description" maxlength="5000" required></textarea></label><label>Deadline<input name="deadline" type="date" required></label><fieldset><legend>Assign to</legend><div id="managerActivityAssignees" class="assignee-options"></div></fieldset><button class="btn btn-primary" type="submit">Create activity</button></form>
       <p id="managerActivityMessage" class="form-message" role="status" aria-live="polite"></p><div id="managerActivities" class="manager-reports"></div>
     </section>

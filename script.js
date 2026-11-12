@@ -133,6 +133,7 @@ function renderReportDays(activities = []) {
 }
 function buildDashboardNavigation(user) {
   const seniorUser = user.accountRole === "senior_user";
+  const headUser = user.accountRole === "head";
   const choices = user.role === "admin" ? [
     ["Manage User Accounts", "admin-users"],
     ["Public Holiday Management", "admin-holidays"],
@@ -143,8 +144,8 @@ function buildDashboardNavigation(user) {
     ["Submitted Reports", "reports"],
     ["Deadline Activities", "assigned"],
     ["Community Engagement", "community"],
-    ...(user.isLineManager || seniorUser ? [["Review and Comment on Reports", "manager-reports"]] : []),
-    ...(user.isLineManager ? [["Activity Assignment and Deadline Management", "manager-activities"]] : [])
+    ...(user.isLineManager || seniorUser || headUser ? [["Review and Comment on Reports", "manager-reports"]] : []),
+    ...(user.isLineManager || seniorUser || headUser ? [["Activity Assignment and Deadline Management", "manager-activities"]] : [])
   ];
   document.getElementById("dashboardNav").innerHTML = choices.map(([label, view]) => '<button type="button" class="dashboard-nav-link" data-nav-dashboard="' + view + '"><span>' + label + '</span><span class="nav-unread-count" aria-label="Unread updates" hidden></span></button>').join("");
 }
@@ -174,6 +175,7 @@ function openDashboard(view) {
   const admin = signedInUser?.role === "admin";
   const lineManager = Boolean(signedInUser?.isLineManager);
   const seniorUser = signedInUser?.accountRole === "senior_user";
+  const headUser = signedInUser?.accountRole === "head";
   const viewLabels = {
     weekly: "Writing Weekly Report", reports: "Submitted Reports", assigned: "Deadline Activities",
     community: "Community Engagement", "manager-reports": "Review and Comment on Reports",
@@ -182,7 +184,7 @@ function openDashboard(view) {
   };
   const allowed = admin
     ? ["admin-users", "admin-holidays", "community", ...(lineManager ? ["manager-reports", "manager-activities"] : [])]
-    : ["weekly", "reports", "assigned", "community", ...(lineManager || seniorUser ? ["manager-reports"] : []), ...(lineManager ? ["manager-activities"] : [])];
+    : ["weekly", "reports", "assigned", "community", ...(lineManager || seniorUser || headUser ? ["manager-reports"] : []), ...(lineManager || seniorUser || headUser ? ["manager-activities"] : [])];
   if (!allowed.includes(view)) return;
   activeDashboard = view;
   markDashboardNotificationsRead(view);
@@ -273,7 +275,8 @@ async function loadUsers() {
     fillManagerOptions(lineManagers);
     tbody.innerHTML = users.map(user => {
       const manager = lineManagers.find(item => item.id === user.lineManagerId);
-      return `<tr><td>${escapeHtml(user.fullName)}</td><td>${escapeHtml(user.email)}</td><td>${user.accountRole === "senior_user" ? "Senior User" : "User"}</td><td>${escapeHtml(user.department)}</td><td>${escapeHtml(user.designation)}</td><td>${manager ? escapeHtml(manager.fullName) : "—"}</td><td><button class="btn btn-secondary" data-edit="${user.id}">Edit account</button> <button class="btn btn-secondary" data-active="${user.id}">${user.active ? "Disable" : "Enable"}</button> <button class="btn btn-secondary" data-delete="${user.id}">Delete</button></td></tr>`;
+      const roleLabel = user.accountRole === "senior_user" ? "Senior" : user.accountRole === "head" ? "Head" : "User";
+      return `<tr><td>${escapeHtml(user.fullName)}</td><td>${escapeHtml(user.email)}</td><td>${roleLabel}</td><td>${escapeHtml(user.department)}</td><td>${escapeHtml(user.designation)}</td><td>${manager ? escapeHtml(manager.fullName) : "—"}</td><td><button class="btn btn-secondary" data-edit="${user.id}">Edit account</button> <button class="btn btn-secondary" data-active="${user.id}">${user.active ? "Disable" : "Enable"}</button> <button class="btn btn-secondary" data-delete="${user.id}">Delete</button></td></tr>`;
     }).join("") || '<tr><td colspan="7">No user accounts yet.</td></tr>';
     tbody.querySelectorAll("[data-edit]").forEach(button => button.addEventListener("click", () => editUser(users.find(user => user.id === button.dataset.edit), lineManagers)));
     tbody.querySelectorAll("[data-active]").forEach(button => button.addEventListener("click", async () => { const target = users.find(item => item.id === button.dataset.active); try { await api(`/api/admin/users/${target.id}`, { method: "PUT", body: JSON.stringify({ active: !target.active }) }); await loadUsers(); } catch (error) { showMessage(document.getElementById("adminMessage"), error.message); } }));
@@ -314,7 +317,11 @@ function communityMarkup(post, currentUserId) {
   const reactions = post.reactions || {};
   const attachments = (post.attachments || []).map(item => {
     const url = `/api/community/posts/${encodeURIComponent(post.id)}/attachments/${encodeURIComponent(item.id)}`;
-    if (["image/jpeg", "image/png", "image/gif", "image/webp"].includes(String(item.mimeType).toLowerCase())) return `<figure class="community-image-attachment"><a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${escapeHtml(item.name)}" loading="lazy" decoding="async"></a><figcaption><a href="${url}" download="${escapeHtml(item.name)}">${escapeHtml(item.name)}</a></figcaption></figure>`;
+    const imageType = String(item.mimeType || "").toLowerCase();
+    const imageExtension = String(item.name || "").split(".").pop().toLowerCase();
+    const imageTypes = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/avif", "image/bmp"];
+    const imageExtensions = ["png", "jpg", "jpeg", "jpe", "jfif", "gif", "webp", "avif", "bmp"];
+    if (imageTypes.includes(imageType) || imageExtensions.includes(imageExtension)) return `<figure class="community-image-attachment"><a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${escapeHtml(item.name)}" loading="lazy" decoding="async"></a></figure>`;
     return `<a class="community-attachment" href="${url}">${escapeHtml(item.name)} (${escapeHtml(item.mimeType)})</a>`;
   }).join("");
   const comments = (post.comments || []).map(comment => `<div class="community-comment"><strong>${escapeHtml(comment.authorName)}</strong><small>${escapeHtml(new Date(comment.createdAt).toLocaleString())}</small><p>${escapeHtml(comment.text)}</p><div class="community-comment-replies">${(comment.replies || []).map(reply => `<div class="community-comment-reply"><strong>${escapeHtml(reply.authorName)}</strong><small>${escapeHtml(new Date(reply.createdAt).toLocaleString())}</small><p>${escapeHtml(reply.text)}</p></div>`).join("")}</div><form class="community-reply-form" data-community-reply="${escapeHtml(comment.id)}"><label class="sr-only" for="reply-${escapeHtml(comment.id)}">Reply to ${escapeHtml(comment.authorName)}</label><input id="reply-${escapeHtml(comment.id)}" name="text" maxlength="3000" required placeholder="Reply to this comment..."><button class="btn btn-secondary" type="submit">Reply</button></form></div>`).join("");
@@ -503,17 +510,22 @@ async function loadManagerReports(usersListId = "managerUsers", containerId = "m
   try {
     const { assignedUsers, reports } = await api("/api/manager/reports");
     const seniorUserView = signedInUser?.accountRole === "senior_user" && usersListId === "managerUsers";
+    const headUserView = signedInUser?.accountRole === "head" && usersListId === "managerUsers";
     if (seniorUserView) {
-      const departments = [...new Set(assignedUsers.map(item => item.department).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      const departments = [...new Set([...assignedUsers.map(item => item.department), ...reports.map(item => item.staff?.department || item.author?.department)].filter(Boolean))].sort((a, b) => a.localeCompare(b));
       if (!departments.includes(selectedUserId.replace(/^department:/, "")) || !selectedUserId.startsWith("department:")) selectedUserId = "";
       usersList.innerHTML = departments.map(department => `<button type="button" class="manager-user-link${selectedUserId === `department:${department}` ? " is-selected" : ""}" data-manager-department="${escapeHtml(department)}">${escapeHtml(department)}</button>`).join("") || '<p class="empty-reports">No departments found.</p>';
       usersList.querySelectorAll("[data-manager-department]").forEach(button => button.addEventListener("click", () => loadManagerReports(usersListId, containerId, headingId, messageId, `department:${button.dataset.managerDepartment}`)));
     } else {
       if (!assignedUsers.some(item => item.id === selectedUserId)) selectedUserId = "";
-      usersList.innerHTML = assignedUsers.map(item => `<button type="button" class="manager-user-link${item.id === selectedUserId ? " is-selected" : ""}" data-manager-user="${escapeHtml(item.id)}">${escapeHtml(item.fullName)}</button>`).join("") || '<p class="empty-reports">No users are currently assigned to you.</p>';
+      usersList.innerHTML = assignedUsers.map(item => {
+        const reportCount = reports.filter(report => report.userId === item.id).length;
+        const progressLabel = headUserView ? ` (${reportCount} submitted report${reportCount === 1 ? "" : "s"})` : "";
+        return `<button type="button" class="manager-user-link${item.id === selectedUserId ? " is-selected" : ""}" data-manager-user="${escapeHtml(item.id)}">${escapeHtml(item.fullName)}${progressLabel}</button>`;
+      }).join("") || `<p class="empty-reports">${headUserView ? "No user accounts found in your department." : "No users are currently assigned to you."}</p>`;
       usersList.querySelectorAll("[data-manager-user]").forEach(button => button.addEventListener("click", () => loadManagerReports(usersListId, containerId, headingId, messageId, button.dataset.managerUser)));
     }
-    renderSelectedManagerReports(selectedUserId, assignedUsers, reports, containerId, headingId, messageId, usersListId, seniorUserView);
+    renderSelectedManagerReports(selectedUserId, assignedUsers, reports, containerId, headingId, messageId, usersListId, seniorUserView, headUserView);
   } catch (error) { showMessage(document.getElementById(messageId), error.message); }
 }
 
@@ -537,11 +549,11 @@ async function loadMyActivities() {
     const { activities } = await api("/api/my/activities");
     container.innerHTML = activities.map(activity => {
       const state = deadlineState(activity.deadline, activity.status === "Completed");
-      return `<article class="manager-report-card activity-card"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · ${escapeHtml(activity.status)} · ${state}</p></div><span class="report-date">Assigned ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header><details class="activity-edit-details"><summary>Edit activity details</summary><form class="activity-edit-form" data-update-activity="${escapeHtml(activity.id)}"><label>Activity title<input name="title" maxlength="200" value="${escapeHtml(activity.title)}" required></label><label>Instructions<textarea name="description" maxlength="5000" required>${escapeHtml(activity.description)}</textarea></label><label>Deadline<input name="deadline" type="date" value="${escapeHtml(activity.deadline)}" required></label><fieldset><legend>Assigned users</legend><div class="assignee-options">${assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}" ${activity.assigneeIds.includes(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("")}</div></fieldset><input type="hidden" name="previousDeadline" value="${escapeHtml(activity.deadline)}"><button class="btn btn-secondary" type="submit">Save activity changes</button></form></details><p class="activity-description">${escapeHtml(activity.description)}</p><div class="activity-updates">${activityUpdatesMarkup(activity.updates)}</div><label>Progress update<textarea data-activity-update="${escapeHtml(activity.id)}" maxlength="5000" placeholder="Share progress or explain a delay..."></textarea></label><div class="activity-update-controls"><label>Status<select data-activity-status="${escapeHtml(activity.id)}"><option${activity.status === "Not Started" ? " selected" : ""}>Not Started</option><option${activity.status === "In Progress" ? " selected" : ""}>In Progress</option><option${activity.status === "On Hold" ? " selected" : ""}>On Hold</option><option${activity.status === "Completed" ? " selected" : ""}>Completed</option></select></label><button type="button" class="btn btn-secondary" data-save-activity="${escapeHtml(activity.id)}">Send update</button></div></article>`;
+      return `<article class="manager-report-card activity-card"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · ${escapeHtml(activity.status)} · ${state}</p></div><span class="report-date">Assigned ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header><p class="activity-description">${escapeHtml(activity.description)}</p><div class="activity-updates">${activityUpdatesMarkup(activity.updates)}</div><label>Progress update<textarea data-activity-update="${escapeHtml(activity.id)}" maxlength="5000" placeholder="Share progress or explain a delay..."></textarea></label><div class="activity-update-controls"><label>Status<select data-activity-status="${escapeHtml(activity.id)}"><option${activity.status === "Not Started" ? " selected" : ""}>Not Started</option><option${activity.status === "In Progress" ? " selected" : ""}>In Progress</option><option${activity.status === "On Hold" ? " selected" : ""}>On Hold</option><option${activity.status === "Completed" ? " selected" : ""}>Completed</option></select></label><button type="button" class="btn btn-secondary" data-save-activity="${escapeHtml(activity.id)}">Send update</button></div></article>`;
     }).join("") || '<p class="empty-reports">No activities have been assigned to you.</p>';
     container.querySelectorAll("[data-save-activity]").forEach(button => button.addEventListener("click", async () => {
       const id = button.dataset.saveActivity; const field = container.querySelector(`[data-activity-update="${id}"]`); const status = container.querySelector(`[data-activity-status="${id}"]`).value;
-      try { await api(`/api/my/activities/${id}/updates`, { method: "POST", body: JSON.stringify({ text: field.value, status }) }); showMessage(document.getElementById("myActivitiesMessage"), "Progress update sent to your Line Manager.", "success"); await loadMyActivities(); }
+      try { await api(`/api/my/activities/${id}/updates`, { method: "POST", body: JSON.stringify({ text: field.value, status }) }); showMessage(document.getElementById("myActivitiesMessage"), "Progress update sent to your supervisor.", "success"); await loadMyActivities(); }
       catch (error) { showMessage(document.getElementById("myActivitiesMessage"), error.message); }
     }));
   } catch (error) { showMessage(document.getElementById("myActivitiesMessage"), error.message); }
@@ -553,8 +565,8 @@ async function loadManagerActivities(prefix) {
   const messageNode = document.getElementById(admin ? "adminActivityMessage" : "managerActivityMessage");
   try {
     const { assignedUsers, activities } = await api("/api/manager/activities");
-    usersNode.innerHTML = assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}">${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("") || '<p class="empty-reports">No users are currently assigned to you.</p>';
-    list.innerHTML = activities.slice().reverse().map(activity => `<article class="manager-report-card activity-card"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · Assigned to ${activity.assignees.map(item => escapeHtml(item.fullName)).join(", ")}</p></div><span class="report-date">Created ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header><p class="activity-description">${escapeHtml(activity.description)}</p>${activity.assignees.map(person => { const updates = activity.updates.filter(update => update.authorId === person.id || update.recipientId === person.id); const status = activity.statusByUser?.[person.id] || "Not Started"; return `<div class="assignee-progress"><h4>${escapeHtml(person.fullName)} · ${escapeHtml(status)} · ${deadlineState(activity.deadline, status === "Completed")}</h4>${activityUpdatesMarkup(updates)}<div class="activity-reply-controls"><label>Reply to ${escapeHtml(person.fullName)}<textarea data-manager-reply="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" maxlength="5000" placeholder="Write a reply..."></textarea></label><button type="button" class="btn btn-secondary" data-send-manager-reply="${escapeHtml(activity.id)}" data-reply-user="${escapeHtml(person.id)}">Send reply</button></div></div>`; }).join("")}</article>`).join("") || '<p class="empty-reports">No activities created yet.</p>';
+    usersNode.innerHTML = assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}">${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("") || '<p class="empty-reports">No active users are available in your oversight scope.</p>';
+    list.innerHTML = activities.slice().reverse().map(activity => `<article class="manager-report-card activity-card"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · Assigned to ${activity.assignees.map(item => escapeHtml(item.fullName)).join(", ")}</p></div><span class="report-date">Created ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header><details class="activity-edit-details"><summary>Edit activity details</summary><form class="activity-edit-form" data-update-activity="${escapeHtml(activity.id)}"><label>Activity title<input name="title" maxlength="200" value="${escapeHtml(activity.title)}" required></label><label>Instructions<textarea name="description" maxlength="5000" required>${escapeHtml(activity.description)}</textarea></label><label>Deadline<input name="deadline" type="date" value="${escapeHtml(activity.deadline)}" required></label><fieldset><legend>Assigned users</legend><div class="assignee-options">${assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}" ${activity.assigneeIds.includes(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("")}</div></fieldset><input type="hidden" name="previousDeadline" value="${escapeHtml(activity.deadline)}"><button class="btn btn-secondary" type="submit">Save activity changes</button></form></details><p class="activity-description">${escapeHtml(activity.description)}</p>${activity.assignees.map(person => { const updates = activity.updates.filter(update => update.authorId === person.id || update.recipientId === person.id); const status = activity.statusByUser?.[person.id] || "Not Started"; return `<div class="assignee-progress"><h4>${escapeHtml(person.fullName)} · ${escapeHtml(status)} · ${deadlineState(activity.deadline, status === "Completed")}</h4>${activityUpdatesMarkup(updates)}<div class="activity-reply-controls"><label>Reply to ${escapeHtml(person.fullName)}<textarea data-manager-reply="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" maxlength="5000" placeholder="Write guidance or a reply..."></textarea></label><button type="button" class="btn btn-secondary" data-send-manager-reply="${escapeHtml(activity.id)}" data-reply-user="${escapeHtml(person.id)}">Send reply</button></div></div>`; }).join("")}</article>`).join("") || '<p class="empty-reports">No activities in your oversight scope yet.</p>';
     list.querySelectorAll("[data-update-activity]").forEach(editForm => editForm.addEventListener("submit", async event => {
       event.preventDefault(); const data = new FormData(editForm); const activityId = editForm.dataset.updateActivity;
       try { const result = await api("/api/manager/activities/" + encodeURIComponent(activityId), { method: "PUT", body: JSON.stringify({ title: data.get("title"), description: data.get("description"), deadline: data.get("deadline"), previousDeadline: data.get("previousDeadline"), assigneeIds: data.getAll("assigneeIds") }) }); showMessage(messageNode, result.changed === false ? "No activity details changed." : "Activity updated. Affected users have been notified.", "success"); await loadManagerActivities(prefix); }
@@ -573,13 +585,13 @@ async function loadManagerActivities(prefix) {
   } catch (error) { showMessage(messageNode, error.message); }
 }
 
-function renderSelectedManagerReports(selectedUserId, assignedUsers, reports, containerId, headingId, messageId, usersListId, seniorUserView = false) {
+function renderSelectedManagerReports(selectedUserId, assignedUsers, reports, containerId, headingId, messageId, usersListId, seniorUserView = false, headUserView = false) {
   const container = document.getElementById(containerId);
   const heading = document.getElementById(headingId);
   const selectedDepartment = seniorUserView && selectedUserId.startsWith("department:") ? selectedUserId.slice("department:".length) : "";
   const selectedUser = assignedUsers.find(item => item.id === selectedUserId);
-  const selectedReports = selectedDepartment ? reports.filter(report => (report.author?.department || report.staff?.department) === selectedDepartment) : reports.filter(report => report.userId === selectedUserId);
-  heading.textContent = selectedDepartment ? `${selectedDepartment} department reports` : selectedUser ? `${selectedUser.fullName}'s submitted reports` : seniorUserView ? "Select a department to review its reports." : "Select a user to review their reports.";
+  const selectedReports = selectedDepartment ? reports.filter(report => (report.staff?.department || report.author?.department) === selectedDepartment) : reports.filter(report => report.userId === selectedUserId);
+  heading.textContent = selectedDepartment ? `${selectedDepartment} department reports` : selectedUser ? `${selectedUser.fullName}'s submitted reports` : seniorUserView ? "Select a department to review its reports." : headUserView ? "Select a department user to review their submissions." : "Select a user to review their reports.";
   container.innerHTML = (selectedDepartment || selectedUser) ? selectedReports.map(report => `<article class="manager-report-card">
       <header><div><h3>${escapeHtml(report.author?.fullName || report.staff.fullName)} <span>(${escapeHtml(report.author?.email || "Account removed")})</span></h3><p>${escapeHtml(report.author?.department || report.staff.department)} · Week commencing ${escapeHtml(report.staff.weekCommencing)}</p></div><span class="report-date">Submitted ${escapeHtml(new Date(report.submittedAt).toLocaleString())}</span></header>
       <div class="review-activities">${renderReportDays(report.activities)}</div>

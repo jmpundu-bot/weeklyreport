@@ -25,7 +25,7 @@ const reportFields = ['activity', 'action', 'dateBy', 'progressUpdate', 'followU
 function notificationsForUser(user) {
   const result = [];
   const add = (section, id, label) => result.push({ id: `${section}:${id}`, section, label });
-  const managedUsers = new Set(db.users.filter(person => person.role === 'user' && person.lineManagerId === user.id && person.active !== false).map(person => person.id));
+  const managedUsers = new Set(db.users.filter(person => person.role === 'user' && person.lineManagerId === user.id && person.active !== false && (user.accountRole !== 'head' || person.department === user.department)).map(person => person.id));
   for (const post of db.communityPosts) {
     if (post.authorId !== user.id) add('community', `post:${post.id}`, 'New community post');
     for (const comment of post.comments || []) {
@@ -34,12 +34,12 @@ function notificationsForUser(user) {
     }
   }
   if (user.role === 'user') {
-    for (const activity of db.activities.filter(item => item.assigneeIds.includes(user.id) && item.lineManagerId === user.lineManagerId)) {
+    for (const activity of db.activities.filter(item => item.assigneeIds.includes(user.id))) {
       add('assigned', `assigned:${activity.id}:${activity.createdAt}`, 'Assigned activity');
       if (activity.updatedAt) add('assigned', `changed:${activity.id}:${activity.updatedAt}`, 'Activity or deadline changed');
-      for (const update of activity.updates || []) if (update.recipientId === user.id && update.authorId !== user.id) add('assigned', `update:${update.id}`, 'Line Manager activity update');
+      for (const update of activity.updates || []) if (update.recipientId === user.id && update.authorId !== user.id) add('assigned', `update:${update.id}`, 'Supervisor activity update');
     }
-    for (const report of db.reports.filter(item => item.userId === user.id)) for (const feedback of report.feedback || []) {
+    for (const report of db.reports.filter(item => item.userId === user.id && (!isHeadUser(user) || reportDepartment(item) === user.department))) for (const feedback of report.feedback || []) {
       if (feedback.sentAt) add('reports', `feedback:${feedback.id}`, 'Line Manager feedback');
       for (const reply of feedback.replies || []) if (reply.authorId !== user.id) add('reports', `feedback-reply:${reply.id}`, 'Feedback reply');
     }
@@ -47,19 +47,36 @@ function notificationsForUser(user) {
       add('manager-reports', `report:${report.id}:${report.submittedAt}`, 'Submitted report');
       for (const feedback of report.feedback || []) for (const reply of feedback.replies || []) if (reply.authorId !== user.id) add('manager-reports', `manager-reply:${reply.id}`, 'Reply to your feedback');
     }
+    if (user.accountRole === 'head' && user.department) for (const report of db.reports.filter(item => (item.staff?.department || db.users.find(person => person.id === item.userId)?.department) === user.department)) {
+      add('manager-reports', `report:${report.id}:${report.submittedAt}`, 'Department report submitted');
+      for (const feedback of report.feedback || []) for (const reply of feedback.replies || []) if (reply.authorId !== user.id) add('manager-reports', `manager-reply:${reply.id}`, 'Reply to your feedback');
+    }
+    if (user.accountRole === 'senior_user') for (const activity of db.activities) {
+      add('manager-activities', `created:${activity.id}:${activity.createdAt}`, 'Activity created');
+      if (activity.updatedAt) add('manager-activities', `changed:${activity.id}:${activity.updatedAt}`, 'Activity updated');
+      for (const update of activity.updates || []) if (update.authorId !== user.id) add('manager-activities', `progress:${update.id}`, 'Activity progress updated');
+    }
+    if (user.accountRole === 'head' && user.department) {
+      const departmentIds = new Set(db.users.filter(person => person.role === 'user' && person.department === user.department).map(person => person.id));
+      for (const activity of db.activities.filter(item => item.assigneeIds.some(id => departmentIds.has(id)))) {
+        add('manager-activities', `created:${activity.id}:${activity.createdAt}`, 'Department activity created');
+        if (activity.updatedAt) add('manager-activities', `changed:${activity.id}:${activity.updatedAt}`, 'Department activity updated');
+        for (const update of activity.updates || []) if ((departmentIds.has(update.authorId) || departmentIds.has(update.recipientId)) && update.authorId !== user.id) add('manager-activities', `progress:${update.id}`, 'Department activity progress updated');
+      }
+    }
   }
   if (['user', 'admin'].includes(user.role) && managedUsers.size) {
     for (const report of db.reports.filter(item => managedUsers.has(item.userId))) {
       add('manager-reports', `report:${report.id}:${report.submittedAt}`, 'Submitted report');
       for (const feedback of report.feedback || []) for (const reply of feedback.replies || []) if (reply.authorId !== user.id) add('manager-reports', `manager-reply:${reply.id}`, 'Reply to your feedback');
     }
-    for (const activity of db.activities.filter(item => item.lineManagerId === user.id)) {
+    for (const activity of db.activities.filter(item => item.lineManagerId === user.id && (user.accountRole !== 'head' || item.assigneeIds.some(id => managedUsers.has(id))))) {
       add('manager-activities', `created:${activity.id}:${activity.createdAt}`, 'Activity created');
       if (activity.updatedAt) add('manager-activities', `changed:${activity.id}:${activity.updatedAt}`, 'Activity updated');
       for (const update of activity.updates || []) if (managedUsers.has(update.authorId) && update.authorId !== user.id) add('manager-activities', `progress:${update.id}`, 'User activity update');
     }
   }
-  return result;
+  return [...new Map(result.map(item => [item.id, item])).values()];
 }
 const emptyDatabase = () => ({ users: [], reports: [], activities: [], drafts: [], publicHolidays: [], communityPosts: [], sessions: [] });
 let db = emptyDatabase();
@@ -316,11 +333,25 @@ function queueEmailNotifications(recipients, notice) {
 
 function publicUser(user) {
   const { password, ...safe } = user;
-  if (safe.role === 'user' && !['user', 'senior_user'].includes(safe.accountRole)) safe.accountRole = 'user';
+  if (safe.role === 'user' && !['user', 'senior_user', 'head'].includes(safe.accountRole)) safe.accountRole = 'user';
   safe.isLineManager = db.users.some(item => item.lineManagerId === user.id) || db.reports.some(report => report.lineManagerId === user.id);
   return safe;
 }
 const isSeniorUser = user => user.role === 'user' && user.accountRole === 'senior_user';
+const isHeadUser = user => user.role === 'user' && user.accountRole === 'head';
+const reportDepartment = report => report.staff?.department || db.users.find(item => item.id === report.userId)?.department || '';
+const canReviewReport = (user, report) => isSeniorUser(user) || (isHeadUser(user) ? Boolean(user.department) && reportDepartment(report) === user.department : report.lineManagerId === user.id);
+function activityScope(user) {
+  const allUsers = db.users.filter(item => item.role === 'user');
+  const scopedUsers = isSeniorUser(user) ? allUsers : isHeadUser(user) ? (user.department ? allUsers.filter(item => item.department === user.department) : []) : allUsers.filter(item => item.lineManagerId === user.id && item.active !== false);
+  return { visibleIds: new Set(scopedUsers.map(item => item.id)), assignableIds: new Set(scopedUsers.filter(item => item.active !== false).map(item => item.id)), users: scopedUsers };
+}
+const canOverseeActivities = user => user.role === 'admin' || isSeniorUser(user) || (isHeadUser(user) && Boolean(user.department)) || (user.role === 'user' && (db.users.some(item => item.role === 'user' && item.lineManagerId === user.id) || db.activities.some(item => item.lineManagerId === user.id)));
+function canManageActivity(user, activity, scope = activityScope(user)) {
+  if (isSeniorUser(user)) return true;
+  if (isHeadUser(user)) return Boolean(user.department) && activity.assigneeIds.some(id => scope.visibleIds.has(id));
+  return activity.lineManagerId === user.id;
+}
 function normalizeCommunityReactions(reactions = {}) {
   const normalized = { ...(reactions || {}) };
   for (const [oldKey, emoji] of [["like", "\u{1F44D}"], ["celebrate", "\u{1F389}"], ["support", "\u{1F64F}"]]) {
@@ -403,8 +434,12 @@ async function handleRequest(req, res) {
       if (!storedData) return send(res, 404, { error: 'Attachment data not found.' });
       const bytes = Buffer.from(storedData.split(',')[1], 'base64');
       const mimeType = String(attachment.mimeType || '').toLowerCase();
-      const inlineImage = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mimeType);
-      res.writeHead(200, { 'Content-Type': inlineImage ? mimeType : 'application/octet-stream', 'Content-Length': bytes.length, 'Content-Disposition': `${inlineImage ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(attachment.name)}`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store' });
+      const imageMimeByExtension = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.jpe': 'image/jpeg', '.jfif': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif', '.bmp': 'image/bmp' };
+      const normalizedMimeType = mimeType === 'image/jpg' ? 'image/jpeg' : mimeType;
+      const supportedImageTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/bmp'];
+      const inlineImageMime = supportedImageTypes.includes(normalizedMimeType) ? normalizedMimeType : imageMimeByExtension[path.extname(attachment.name).toLowerCase()];
+      const inlineImage = Boolean(inlineImageMime);
+      res.writeHead(200, { 'Content-Type': inlineImage ? inlineImageMime : 'application/octet-stream', 'Content-Length': bytes.length, 'Content-Disposition': `${inlineImage ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(attachment.name)}`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store' });
       return res.end(bytes);
     }
     if (url.pathname === '/api/community/posts' && req.method === 'POST') {
@@ -563,7 +598,7 @@ async function handleRequest(req, res) {
         const department = String(body.department || '').trim();
         const accountRole = String(body.accountRole || 'user').trim();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return send(res, 400, { error: 'Enter a valid email address.' });
-        if (!['user', 'senior_user'].includes(accountRole)) return send(res, 400, { error: 'Select User or Senior User.' });
+        if (!['user', 'senior_user', 'head'].includes(accountRole)) return send(res, 400, { error: 'Select User, Senior, or Head.' });
         if (!departments.includes(department)) return send(res, 400, { error: 'Select a department from the list.' });
         if (password.length < 10) return send(res, 400, { error: 'Password must contain at least 10 characters.' });
         if (db.users.some(item => item.email.toLowerCase() === email)) return send(res, 400, { error: 'That email address already has an account. Use a different email.' });
@@ -632,18 +667,18 @@ async function handleRequest(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/api/my/reports') {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
-      const reports = db.reports.filter(report => report.userId === user.id).sort((a, b) => b.submittedAt.localeCompare(a.submittedAt)).map(report => ({ ...report, feedback: (report.feedback || []).filter(feedback => feedback.sentAt) }));
+      const reports = db.reports.filter(report => report.userId === user.id && (!isHeadUser(user) || reportDepartment(report) === user.department)).sort((a, b) => b.submittedAt.localeCompare(a.submittedAt)).map(report => ({ ...report, feedback: (report.feedback || []).filter(feedback => feedback.sentAt) }));
       return send(res, 200, { reports });
     }
     if (req.method === 'GET' && url.pathname === '/api/my/activities') {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
-      const activities = db.activities.filter(item => item.lineManagerId === user.lineManagerId && item.assigneeIds.includes(user.id)).map(item => ({ id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, status: item.statusByUser?.[user.id] || 'Not Started', updates: item.updates.filter(update => update.authorId === user.id || update.recipientId === user.id) }));
+      const activities = db.activities.filter(item => item.assigneeIds.includes(user.id)).map(item => ({ id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, status: item.statusByUser?.[user.id] || 'Not Started', updates: item.updates.filter(update => update.authorId === user.id || update.recipientId === user.id) }));
       return send(res, 200, { activities });
     }
     const activityUpdateMatch = url.pathname.match(/^\/api\/my\/activities\/([\w-]+)\/updates$/);
     if (req.method === 'POST' && activityUpdateMatch) {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
-      const activity = db.activities.find(item => item.id === activityUpdateMatch[1] && item.lineManagerId === user.lineManagerId && item.assigneeIds.includes(user.id));
+      const activity = db.activities.find(item => item.id === activityUpdateMatch[1] && item.assigneeIds.includes(user.id));
       if (!activity) return send(res, 404, { error: 'Assigned activity not found.' });
       const body = await readBody(req); const text = String(body.text || '').trim(); const status = String(body.status || 'In Progress');
       if (!text || text.length > 5000 || !['Not Started', 'In Progress', 'Completed', 'On Hold'].includes(status)) return send(res, 400, { error: 'Enter an update (up to 5,000 characters) and choose a valid status.' });
@@ -652,23 +687,29 @@ async function handleRequest(req, res) {
       await persist(); return send(res, 201, { ok: true });
     }
     if (req.method === 'GET' && url.pathname === '/api/manager/activities') {
-      if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
-      const assignedIds = new Set(db.users.filter(item => item.role === 'user' && item.lineManagerId === user.id && item.active !== false).map(item => item.id));
-      return send(res, 200, { assignedUsers: db.users.filter(item => assignedIds.has(item.id)).map(item => ({ id: item.id, fullName: item.fullName, email: item.email })), activities: db.activities.filter(item => item.lineManagerId === user.id).map(item => ({ ...item, assigneeIds: item.assigneeIds.filter(id => assignedIds.has(id)), assignees: item.assigneeIds.filter(id => assignedIds.has(id)).map(id => { const target = db.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), updates: item.updates.filter(update => assignedIds.has(update.authorId) || (update.recipientId && assignedIds.has(update.recipientId))) })) });
+      if (!canOverseeActivities(user)) return send(res, 403, { error: 'Activity oversight access required.' });
+      const scope = activityScope(user);
+      const activities = db.activities.filter(item => isSeniorUser(user) || (isHeadUser(user) ? canManageActivity(user, item, scope) : item.lineManagerId === user.id)).map(item => {
+        const assigneeIds = item.assigneeIds.filter(id => scope.visibleIds.has(id));
+        return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, updatedAt: item.updatedAt, assigneeIds, assignees: assigneeIds.map(id => { const target = scope.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), statusByUser: Object.fromEntries(Object.entries(item.statusByUser || {}).filter(([id]) => scope.visibleIds.has(id))), updates: item.updates.filter(update => scope.visibleIds.has(update.authorId) || (update.recipientId && scope.visibleIds.has(update.recipientId))) };
+      });
+      return send(res, 200, { assignedUsers: scope.users.filter(item => item.active !== false).map(item => ({ id: item.id, fullName: item.fullName, email: item.email })), activities });
     }
     const managerActivityEditMatch = url.pathname.match(/^\/api\/manager\/activities\/([\w-]+)$/);
     if (req.method === 'PUT' && managerActivityEditMatch) {
-      if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
-      const activity = db.activities.find(item => item.id === managerActivityEditMatch[1] && item.lineManagerId === user.id);
+      if (!canOverseeActivities(user)) return send(res, 403, { error: 'Activity oversight access required.' });
+      const scope = activityScope(user);
+      const activity = db.activities.find(item => item.id === managerActivityEditMatch[1] && canManageActivity(user, item, scope));
       if (!activity) return send(res, 404, { error: 'Activity not found.' });
       const body = await readBody(req);
       const title = String(body.title || '').trim(); const description = String(body.description || '').trim(); const deadline = String(body.deadline || '');
-      const assignedUsers = new Set(db.users.filter(item => item.role === 'user' && item.lineManagerId === user.id && item.active !== false).map(item => item.id));
       const previousAssigneeIds = [...activity.assigneeIds];
       const previousTitle = activity.title; const previousDescription = activity.description; const previousDeadline = activity.deadline;
-      const assigneeIds = [...new Set(Array.isArray(body.assigneeIds) ? body.assigneeIds.map(String) : previousAssigneeIds.filter(id => assignedUsers.has(id)))];
+      const selectedIds = [...new Set(Array.isArray(body.assigneeIds) ? body.assigneeIds.map(String) : previousAssigneeIds.filter(id => scope.assignableIds.has(id)))];
+      const retainedIds = isSeniorUser(user) || isHeadUser(user) ? previousAssigneeIds.filter(id => !scope.assignableIds.has(id)) : [];
+      const assigneeIds = [...new Set([...selectedIds, ...retainedIds])];
       const dateValid = /^\d{4}-\d{2}-\d{2}$/.test(deadline) && !Number.isNaN(Date.parse(deadline + 'T00:00:00Z')) && new Date(deadline + 'T00:00:00Z').toISOString().slice(0, 10) === deadline;
-      if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !assigneeIds.length || assigneeIds.some(id => !assignedUsers.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select only active users assigned to you.' });
+      if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !selectedIds.length || selectedIds.some(id => !scope.assignableIds.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select active users within your oversight scope.' });
       const assignmentChanged = previousAssigneeIds.length !== assigneeIds.length || previousAssigneeIds.some(id => !assigneeIds.includes(id));
       const changed = title !== previousTitle || description !== previousDescription || deadline !== previousDeadline || assignmentChanged;
       if (!changed) return send(res, 200, { activity, changed: false });
@@ -681,10 +722,11 @@ async function handleRequest(req, res) {
     }
     const managerActivityReplyMatch = url.pathname.match(/^\/api\/manager\/activities\/([\w-]+)\/assignees\/([\w-]+)\/replies$/);
     if (req.method === 'POST' && managerActivityReplyMatch) {
-      if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
+      if (!canOverseeActivities(user)) return send(res, 403, { error: 'Activity oversight access required.' });
+      const scope = activityScope(user);
       const [, activityId, assigneeId] = managerActivityReplyMatch;
-      const activity = db.activities.find(item => item.id === activityId && item.lineManagerId === user.id && item.assigneeIds.includes(assigneeId));
-      const assignee = db.users.find(item => item.id === assigneeId && item.role === 'user' && item.lineManagerId === user.id && item.active !== false);
+      const activity = db.activities.find(item => item.id === activityId && canManageActivity(user, item, scope) && item.assigneeIds.includes(assigneeId));
+      const assignee = db.users.find(item => item.id === assigneeId && item.role === 'user' && scope.assignableIds.has(item.id));
       if (!activity || !assignee) return send(res, 404, { error: 'Assigned activity participant not found.' });
       const body = await readBody(req); const text = String(body.text || '').trim();
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter a reply of 1 to 5,000 characters.' });
@@ -692,12 +734,12 @@ async function handleRequest(req, res) {
       await persist(); queueEmailNotifications([assignee], { type: 'Deadline Activity Update', subject: 'Activity update: ' + activity.title, description: text + '\nDeadline: ' + activity.deadline, actor: user.fullName, dashboard: 'assigned' }); return send(res, 201, { ok: true });
     }
     if (req.method === 'POST' && url.pathname === '/api/manager/activities') {
-      if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
+      if (!canOverseeActivities(user)) return send(res, 403, { error: 'Activity oversight access required.' });
+      const scope = activityScope(user);
       const body = await readBody(req); const title = String(body.title || '').trim(); const description = String(body.description || '').trim(); const deadline = String(body.deadline || '');
-      const assignedIds = new Set(db.users.filter(item => item.role === 'user' && item.lineManagerId === user.id && item.active !== false).map(item => item.id));
       const assigneeIds = [...new Set(Array.isArray(body.assigneeIds) ? body.assigneeIds.map(String) : [])];
       const dateValid = /^\d{4}-\d{2}-\d{2}$/.test(deadline) && !Number.isNaN(Date.parse(`${deadline}T00:00:00Z`)) && new Date(`${deadline}T00:00:00Z`).toISOString().slice(0, 10) === deadline;
-      if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !assigneeIds.length || assigneeIds.some(id => !assignedIds.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select only active users assigned to you.' });
+      if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !assigneeIds.length || assigneeIds.some(id => !scope.assignableIds.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select active users within your oversight scope.' });
       const activity = { id: crypto.randomUUID(), lineManagerId: user.id, title, description, deadline, assigneeIds, statusByUser: {}, updates: [], createdAt: new Date().toISOString() };
       db.activities.push(activity); await persist();
       queueEmailNotifications(db.users.filter(person => assigneeIds.includes(person.id)), { type: 'Deadline Activity Assigned', subject: 'New activity: ' + title, description: description + '\nDeadline: ' + deadline, actor: user.fullName, dashboard: 'assigned' });
@@ -705,18 +747,24 @@ async function handleRequest(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/api/manager/reports') {
       if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
-      const assignedUsers = db.users.filter(item => item.role === 'user' && (isSeniorUser(user) || (item.active !== false && item.lineManagerId === user.id))).map(item => ({ id: item.id, fullName: item.fullName, email: item.email, department: item.department }));
+      const assignedUsers = db.users.filter(item => item.role === 'user' && (isSeniorUser(user) || (isHeadUser(user) ? Boolean(user.department) && item.department === user.department : item.active !== false && item.lineManagerId === user.id))).map(item => ({ id: item.id, fullName: item.fullName, email: item.email, department: item.department }));
       const assignedIds = new Set(assignedUsers.map(item => item.id));
-      const reports = db.reports.filter(report => assignedIds.has(report.userId) && (isSeniorUser(user) || report.lineManagerId === user.id)).map(report => {
+      const reports = db.reports.filter(report => isSeniorUser(user) || (isHeadUser(user) && Boolean(user.department) && reportDepartment(report) === user.department) || (!isHeadUser(user) && !isSeniorUser(user) && assignedIds.has(report.userId) && report.lineManagerId === user.id)).map(report => {
         const author = db.users.find(item => item.id === report.userId);
         return { ...report, author: author ? { fullName: author.fullName, email: author.email, department: author.department } : null };
       });
+      if (isHeadUser(user)) {
+        for (const report of reports) if (!assignedIds.has(report.userId)) {
+          assignedUsers.push({ id: report.userId, fullName: report.staff?.fullName || report.author?.fullName || 'Former department member', email: report.author?.email || '', department: reportDepartment(report), former: true });
+          assignedIds.add(report.userId);
+        }
+      }
       return send(res, 200, { assignedUsers, reports });
     }
     const feedbackMatch = url.pathname.match(/^\/api\/manager\/reports\/([\w-]+)\/feedback$/);
     if (req.method === 'POST' && feedbackMatch) {
       if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
-      const report = db.reports.find(item => item.id === feedbackMatch[1] && (isSeniorUser(user) || item.lineManagerId === user.id));
+      const report = db.reports.find(item => item.id === feedbackMatch[1] && canReviewReport(user, item));
       if (!report) return send(res, 404, { error: 'Assigned report not found.' });
       const body = await readBody(req); const text = String(body.feedback || '').trim();
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter feedback of 1 to 5,000 characters.' });
@@ -727,7 +775,7 @@ async function handleRequest(req, res) {
     const sendFeedbackMatch = url.pathname.match(/^\/api\/manager\/reports\/([\w-]+)\/feedback\/([\w-]+)\/send$/);
     if (req.method === 'POST' && sendFeedbackMatch) {
       if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
-      const report = db.reports.find(item => item.id === sendFeedbackMatch[1] && (isSeniorUser(user) || item.lineManagerId === user.id));
+      const report = db.reports.find(item => item.id === sendFeedbackMatch[1] && canReviewReport(user, item));
       const feedback = report?.feedback?.find(item => item.id === sendFeedbackMatch[2]);
       if (!feedback) return send(res, 404, { error: 'Feedback draft not found.' });
       const newlySent = !feedback.sentAt;
@@ -739,7 +787,7 @@ async function handleRequest(req, res) {
     const replyMatch = url.pathname.match(/^\/api\/my\/reports\/([\w-]+)\/feedback\/([\w-]+)\/replies$/);
     if (req.method === 'POST' && replyMatch) {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
-      const report = db.reports.find(item => item.id === replyMatch[1] && item.userId === user.id);
+      const report = db.reports.find(item => item.id === replyMatch[1] && item.userId === user.id && (!isHeadUser(user) || reportDepartment(item) === user.department));
       const feedback = report?.feedback?.find(item => item.id === replyMatch[2] && item.sentAt);
       if (!feedback) return send(res, 404, { error: 'Sent feedback not found.' });
       const body = await readBody(req); const text = String(body.reply || '').trim();
