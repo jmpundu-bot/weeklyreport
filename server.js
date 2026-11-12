@@ -680,7 +680,8 @@ async function handleRequest(req, res) {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
       const activity = db.activities.find(item => item.id === activityUpdateMatch[1] && item.assigneeIds.includes(user.id));
       if (!activity) return send(res, 404, { error: 'Assigned activity not found.' });
-      const body = await readBody(req); const text = String(body.text || '').trim(); const status = String(body.status || 'In Progress');
+      const body = await readBody(req); const text = String(body.text || '').trim(); const requestedStatus = String(body.status || 'In Progress');
+      const status = text.toLowerCase() === 'implemented' ? 'Completed' : requestedStatus;
       if (!text || text.length > 5000 || !['Not Started', 'In Progress', 'Completed', 'On Hold'].includes(status)) return send(res, 400, { error: 'Enter an update (up to 5,000 characters) and choose a valid status.' });
       activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: user.id, text, status, createdAt: new Date().toISOString() });
       activity.statusByUser = { ...(activity.statusByUser || {}), [user.id]: status };
