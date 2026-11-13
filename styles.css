@@ -115,13 +115,13 @@ body {
 .community-post-actions, .community-reactions { display: flex; flex-wrap: wrap; gap: 8px; }
 .community-post-actions .btn, .community-reactions .btn { padding: 8px 12px; }
 .community-post-text { line-height: 1.6; white-space: normal; overflow-wrap: anywhere; }
-.community-attachments { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 8px; margin: 14px 0; }
+.community-attachments { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin: 14px 0; }
 .community-attachment { display: inline-block; padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px; color: var(--green-dark); background: var(--green-pale); text-decoration: none; overflow-wrap: anywhere; }
-.community-image-attachment { min-width: 0; margin: 0; overflow: hidden; border-radius: 8px; background: #f1f3f1; }
-.community-image-attachment:only-child { grid-column: 1 / -1; }
-.community-photo-button { display: block; width: 100%; aspect-ratio: 4 / 3; padding: 0; overflow: hidden; border: 0; background: transparent; cursor: zoom-in; }
+.community-image-attachment { flex: 0 0 88px; width: 88px; height: 72px; margin: 0; overflow: hidden; border-radius: 7px; background: #f1f3f1; }
+.community-photo-button { display: block; width: 100%; height: 100%; padding: 0; overflow: hidden; border: 0; background: transparent; cursor: zoom-in; }
 .community-photo-button img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .18s ease; }
 .community-photo-button:hover img, .community-photo-button:focus-visible img { transform: scale(1.035); }
+.community-photo-count { display: inline-flex; min-width: 40px; height: 30px; align-items: center; justify-content: center; padding: 0 8px; border-radius: 999px; color: var(--green-dark); background: var(--green-soft); font-size: 12px; font-weight: 800; }
 .community-photo-dialog { position: fixed; width: fit-content; max-width: min(96vw, 1200px); max-height: 94vh; padding: 42px 16px 14px; overflow: auto; border: 0; border-radius: 12px; color: #fff; background: #171a18; box-shadow: 0 18px 70px rgba(0, 0, 0, .55); }
 .community-photo-dialog::backdrop { background: rgba(0, 0, 0, .78); }
 .community-photo-dialog img { display: block; max-width: calc(96vw - 32px); max-height: 78vh; margin: 0 auto; object-fit: contain; }
