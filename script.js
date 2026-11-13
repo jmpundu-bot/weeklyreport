@@ -144,13 +144,13 @@ function buildDashboardNavigation(user) {
   const choices = user.role === "admin" ? [
     ["Manage User Accounts", "admin-users"],
     ["Public Holiday Management", "admin-holidays"],
-    ["Community Engagement", "community"],
+    ["Staff Engagement", "community"],
     ...(user.isLineManager ? [["Review and Comment on Reports", "manager-reports"], ["Activity Assignment and Deadline Management", "manager-activities"]] : [])
   ] : [
     ["Writing Weekly Report", "weekly"],
     ["Submitted Reports", "reports"],
     ["Deadline Activities", "assigned"],
-    ["Community Engagement", "community"],
+    ["Staff Engagement", "community"],
     ...(user.isLineManager || seniorUser || headUser ? [["Review and Comment on Reports", "manager-reports"]] : []),
     ...(user.isLineManager || seniorUser || headUser ? [["Activity Assignment and Deadline Management", "manager-activities"]] : [])
   ];

@@ -18,9 +18,10 @@ body {
   padding: 32px 18px;
   color: var(--ink);
   background-color: #294530;
-  background-image: linear-gradient(rgba(18, 30, 20, .34), rgba(18, 30, 20, .34)), url("Mapalo-1193352-Secondary-Mpika-ZAM-09-Oct-2023_Catherine-Wood_IMG_9908.jpg");
-  background-position: center;
+  background-image: linear-gradient(rgba(18, 30, 20, .34), rgba(18, 30, 20, .34)), url("staff1.JPG");
+  background-position: center center;
   background-size: cover;
+  background-repeat: no-repeat;
   background-attachment: fixed;
   font-family: "DM Sans", Arial, sans-serif;
 }
