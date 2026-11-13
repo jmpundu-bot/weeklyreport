@@ -55,7 +55,7 @@
           <label>Post type<select name="type"><option value="update">Update</option><option value="story">Story</option><option value="announcement">Announcement</option><option value="news">News</option><option value="other">Other</option></select></label>
           <label>Title<input name="title" maxlength="160" required placeholder="Give your post a title"></label>
           <label>Message<textarea name="text" maxlength="10000" required placeholder="Share with all users..."></textarea></label>
-          <label>Attach files <span class="field-hint">Up to 10 files, 50 MB combined per post</span><input name="attachments" type="file" multiple></label>
+          <label>Add photos or files <span class="field-hint">Up to 10 photos or files, 50 MB combined per post</span><input name="attachments" type="file" multiple></label>
           <button class="btn btn-primary" type="submit">Publish post</button>
         </form>
         <p id="adminCommunityMessage" class="form-message" role="status" aria-live="polite"></p><div id="adminCommunityFeed" class="community-feed"></div>
@@ -149,7 +149,7 @@
         <label>Post type<select name="type"><option value="update">Update</option><option value="story">Story</option><option value="announcement">Announcement</option><option value="news">News</option><option value="other">Other</option></select></label>
         <label>Title<input name="title" maxlength="160" required placeholder="Give your post a title"></label>
         <label>Message<textarea name="text" maxlength="10000" required placeholder="Share with all users..."></textarea></label>
-        <label>Attach files <span class="field-hint">Up to 10 files, 50 MB combined per post</span><input name="attachments" type="file" multiple></label>
+        <label>Add photos or files <span class="field-hint">Up to 10 photos or files, 50 MB combined per post</span><input name="attachments" type="file" multiple></label>
         <button class="btn btn-primary" type="submit">Publish post</button>
       </form>
       <p id="userCommunityMessage" class="form-message" role="status" aria-live="polite"></p><div id="userCommunityFeed" class="community-feed"></div>
@@ -179,6 +179,11 @@
 
     <footer>CAMFED Zambia <span>•</span> Weekly Activities</footer>
   </main>
+  <dialog id="communityPhotoDialog" class="community-photo-dialog" aria-label="Photo viewer">
+    <button id="communityPhotoClose" class="community-photo-close" type="button" aria-label="Close photo">&times;</button>
+    <img id="communityPhotoView" alt="">
+    <p id="communityPhotoCaption"></p>
+  </dialog>
   <script src="script.js"></script>
 </body>
 </html>

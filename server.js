@@ -467,7 +467,7 @@ async function handleRequest(req, res) {
     }
     if (url.pathname === '/api/community/posts' && req.method === 'GET') {
       const activeUsers = new Map(db.users.filter(item => item.active !== false).map(item => [item.id, item]));
-      const posts = db.communityPosts.filter(post => activeUsers.has(post.authorId)).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(post => ({ ...post, reactions: normalizeCommunityReactions(post.reactions), attachments: (post.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), authorName: activeUsers.get(post.authorId).fullName, comments: (post.comments || []).filter(comment => activeUsers.has(comment.authorId)).map(comment => ({ ...comment, authorName: activeUsers.get(comment.authorId).fullName, replies: (comment.replies || []).filter(reply => activeUsers.has(reply.authorId)).map(reply => ({ ...reply, authorName: activeUsers.get(reply.authorId).fullName })) })) }));
+      const posts = db.communityPosts.filter(post => activeUsers.has(post.authorId)).slice().sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || '')).map(post => ({ ...post, reactions: normalizeCommunityReactions(post.reactions), attachments: (post.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), authorName: activeUsers.get(post.authorId).fullName, comments: (post.comments || []).filter(comment => activeUsers.has(comment.authorId)).map(comment => ({ ...comment, authorName: activeUsers.get(comment.authorId).fullName, replies: (comment.replies || []).filter(reply => activeUsers.has(reply.authorId)).map(reply => ({ ...reply, authorName: activeUsers.get(reply.authorId).fullName })) })) }));
       return send(res, 200, { posts, currentUserId: user.id });
     }
     const communityAttachmentMatch = url.pathname.match(/^\/api\/community\/posts\/([\w-]+)\/attachments\/([\w-]+)$/);
@@ -616,7 +616,7 @@ async function handleRequest(req, res) {
     }
     if (url.pathname.startsWith('/api/admin/')) {
       if (user.role !== 'admin') return send(res, 403, { error: 'Administrator access required.' });
-      if (url.pathname === '/api/admin/holidays' && req.method === 'GET') return send(res, 200, { holidays: db.publicHolidays.slice().sort((a, b) => a.date.localeCompare(b.date)) });
+      if (url.pathname === '/api/admin/holidays' && req.method === 'GET') return send(res, 200, { holidays: db.publicHolidays.slice().sort((a, b) => b.date.localeCompare(a.date)) });
       if (url.pathname === '/api/admin/holidays' && req.method === 'POST') {
         const body = await readBody(req); const date = String(body.date || ''); const name = String(body.name || '').trim().slice(0, 100);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`)) || new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date) return send(res, 400, { error: 'Enter a valid public holiday date.' });
@@ -679,7 +679,7 @@ async function handleRequest(req, res) {
         }
       }
     }
-    if (req.method === 'GET' && url.pathname === '/api/holidays') return send(res, 200, { holidays: db.publicHolidays.slice().sort((a, b) => a.date.localeCompare(b.date)) });
+    if (req.method === 'GET' && url.pathname === '/api/holidays') return send(res, 200, { holidays: db.publicHolidays.slice().sort((a, b) => b.date.localeCompare(a.date)) });
     if (req.method === 'POST' && url.pathname === '/api/reports') {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
       const lineManager = db.users.find(item => item.id === user.lineManagerId && item.role === 'user' && item.active !== false);
