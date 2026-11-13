@@ -185,7 +185,7 @@ function openDashboard(view) {
   const headUser = signedInUser?.accountRole === "head";
   const viewLabels = {
     weekly: "Writing Weekly Report", reports: "Submitted Reports", assigned: "Deadline Activities",
-    community: "Community Engagement", "manager-reports": "Review and Comment on Reports",
+    community: "Staff Engagement", "manager-reports": "Review and Comment on Reports",
     "manager-activities": "Activity Assignment and Deadline Management",
     "admin-users": "Manage User Accounts", "admin-holidays": "Public Holiday Management"
   };
