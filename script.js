@@ -505,9 +505,9 @@ async function downloadReportPdf(report) {
   link.href = url; link.download = `CAMFED_Weekly_Activity_Report_${safeName}_${week}.pdf`; document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 document.getElementById("createUserForm").addEventListener("submit", async event => {
-  event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget));
+  event.preventDefault(); const form = event.currentTarget; const data = Object.fromEntries(new FormData(form));
   data.email = String(data.email || "").trim(); data.department = String(data.department || "").trim();
-  try { await api("/api/admin/users", { method: "POST", body: JSON.stringify(data) }); event.currentTarget.reset(); showMessage(document.getElementById("adminMessage"), "User account created.", "success"); await loadUsers(); }
+  try { await api("/api/admin/users", { method: "POST", body: JSON.stringify(data) }); form.reset(); showMessage(document.getElementById("adminMessage"), "User account created.", "success"); await loadUsers(); }
   catch (error) { showMessage(document.getElementById("adminMessage"), error.message); }
 });
 
@@ -738,8 +738,9 @@ async function handleProfilePictureChange(event, display) {
 document.getElementById("sharedProfilePictureInput").addEventListener("change",event=>handleProfilePictureChange(event,displayProfilePicture));
 document.getElementById("holidayForm").addEventListener("submit", async event => {
   event.preventDefault();
-  const data = Object.fromEntries(new FormData(event.currentTarget));
-  try { await api("/api/admin/holidays", { method: "POST", body: JSON.stringify(data) }); event.currentTarget.reset(); showMessage(document.getElementById("holidayMessage"), "Public holiday added.", "success"); await loadHolidayAdmin(); await refreshPublicHolidays(); }
+  const form = event.currentTarget;
+  const data = Object.fromEntries(new FormData(form));
+  try { await api("/api/admin/holidays", { method: "POST", body: JSON.stringify(data) }); form.reset(); showMessage(document.getElementById("holidayMessage"), "Public holiday added.", "success"); await loadHolidayAdmin(); await refreshPublicHolidays(); }
   catch (error) { showMessage(document.getElementById("holidayMessage"), error.message); }
 });
 form.addEventListener("input", scheduleDraftSave);
