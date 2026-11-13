@@ -185,6 +185,10 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .feedback-reply { margin: 8px 0; padding: 10px 12px; border-left: 3px solid var(--green); background: var(--green-pale); font-size: 12px; white-space: pre-wrap; }
 .feedback-thread label { margin-top: 10px; }
 .feedback-thread textarea { min-height: 64px; resize: vertical; }
+.private-report-chat { margin: 14px 0; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+.private-report-chat h4 { margin: 0 0 8px; }
+.private-report-chat-messages { max-height: 280px; overflow-y: auto; }
+.private-report-chat textarea { min-height: 64px; resize: vertical; }
 .empty-comments, .empty-reports { color: var(--muted); font-size: 13px; }
 .manager-report-card > label { margin: 12px 0; }
 .manager-report-card textarea { min-height: 72px; resize: vertical; }

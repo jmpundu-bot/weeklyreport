@@ -614,6 +614,14 @@ async function loadManagerActivities(prefix) {
   } catch (error) { showMessage(messageNode, error.message); }
 }
 
+function privateReportChatMarkup(report, seniorUserView) {
+  const currentId = signedInUser?.id;
+  if (!seniorUserView && report.lineManager?.id !== currentId) return "";
+  const messages = report.privateMessages || [];
+  const partnerId = seniorUserView ? report.lineManager?.id : messages.find(message => message.authorId !== currentId)?.authorId;
+  const partnerName = seniorUserView ? report.lineManager?.fullName : messages.find(message => message.authorId === partnerId)?.authorName || "Senior user";
+  return `<div class="private-report-chat"><h4>Private chat with ${escapeHtml(partnerName || "Line Manager")}</h4><div class="private-report-chat-messages">${messages.map(message => `<p class="feedback-reply"><strong>${escapeHtml(message.authorName)}</strong> · ${escapeHtml(new Date(message.createdAt).toLocaleString())}<br>${escapeHtml(message.text)}</p>`).join("") || '<p class="empty-comments">No private messages yet.</p>'}</div>${partnerId ? `<label>Private message<textarea data-private-chat-text="${escapeHtml(report.id)}" maxlength="5000" placeholder="Write a private message..."></textarea></label><button type="button" class="btn btn-secondary" data-send-private-chat="${escapeHtml(report.id)}" data-chat-recipient="${escapeHtml(partnerId)}">Send private message</button>` : '<p class="empty-comments">The report does not have an active Line Manager for private chat.</p>'}</div>`;
+}
 function renderSelectedManagerReports(selectedUserId, assignedUsers, reports, containerId, headingId, messageId, usersListId, seniorUserView = false, headUserView = false) {
   const container = document.getElementById(containerId);
   const heading = document.getElementById(headingId);
@@ -626,7 +634,8 @@ function renderSelectedManagerReports(selectedUserId, assignedUsers, reports, co
       <header><div><h3>${escapeHtml(report.author?.fullName || report.staff.fullName)} <span>(${escapeHtml(report.author?.email || "Account removed")})</span></h3><p>${escapeHtml(report.author?.department || report.staff.department)} · Week commencing ${escapeHtml(report.staff.weekCommencing)}</p></div><span class="report-date">Submitted ${escapeHtml(new Date(report.submittedAt).toLocaleString())}</span></header>
       <div class="review-activities">${renderReportDays(report.activities)}</div>
       <div class="report-comments"><h4>Feedback and replies</h4>${(report.feedback || []).map(feedback => `<div class="feedback-thread"><p class="report-comment"><strong>${escapeHtml(feedback.authorName)}</strong> · ${escapeHtml(new Date(feedback.createdAt).toLocaleString())} · ${feedback.sentAt ? "Sent to user" : "Draft"}<br>${escapeHtml(feedback.text)}</p>${(feedback.replies || []).map(reply => `<p class="feedback-reply"><strong>Reply from ${escapeHtml(reply.authorName)}</strong> · ${escapeHtml(new Date(reply.createdAt).toLocaleString())}<br>${escapeHtml(reply.text)}</p>`).join("")}${feedback.sentAt ? "" : `<button type="button" class="btn btn-primary" data-send-feedback="${escapeHtml(report.id)}" data-feedback-id="${escapeHtml(feedback.id)}">Send feedback to user</button>`}</div>`).join("") || '<p class="empty-comments">No feedback drafted yet.</p>'}</div>
-      <label>New feedback<textarea data-feedback-draft="${escapeHtml(report.id)}" maxlength="5000" placeholder="Write feedback for this report..."></textarea></label><button type="button" class="btn btn-secondary" data-create-feedback="${escapeHtml(report.id)}">Save feedback draft</button>
+      ${privateReportChatMarkup(report, seniorUserView)}
+      <label>${seniorUserView ? "Private reply to " + escapeHtml(report.author?.fullName || report.staff.fullName) : "New feedback"}<textarea data-feedback-draft="${escapeHtml(report.id)}" maxlength="5000" placeholder="${seniorUserView ? "Write a private reply to this user..." : "Write feedback for this report..."}"></textarea></label><button type="button" class="btn btn-secondary" ${seniorUserView ? `data-private-reply="${escapeHtml(report.id)}"` : `data-create-feedback="${escapeHtml(report.id)}"`}>${seniorUserView ? "Send private reply" : "Save feedback draft"}</button>
       <button type="button" class="btn btn-secondary" data-download-report="${escapeHtml(report.id)}">Download PDF</button>
     </article>`).join("") : "";
   if ((selectedDepartment || selectedUser) && !selectedReports.length) container.innerHTML = selectedDepartment ? '<p class="empty-reports">No reports have been submitted by users in this department yet.</p>' : '<p class="empty-reports">This user has not submitted any weekly reports yet.</p>';
@@ -634,6 +643,23 @@ function renderSelectedManagerReports(selectedUserId, assignedUsers, reports, co
       const reportId = button.dataset.createFeedback; const field = container.querySelector(`[data-feedback-draft="${reportId}"]`);
       try { await api(`/api/manager/reports/${reportId}/feedback`, { method: "POST", body: JSON.stringify({ feedback: field.value }) }); showMessage(document.getElementById(messageId), "Feedback draft saved. Send it when it is ready.", "success"); await loadManagerReports(usersListId, containerId, headingId, messageId, selectedUserId); }
       catch (error) { showMessage(document.getElementById(messageId), error.message); }
+    }));
+    container.querySelectorAll("[data-private-reply]").forEach(button => button.addEventListener("click", async () => {
+      const reportId = button.dataset.privateReply; const field = container.querySelector(`[data-feedback-draft="${reportId}"]`);
+      try {
+        await api(`/api/manager/reports/${reportId}/feedback`, { method: "POST", body: JSON.stringify({ feedback: field.value, sendImmediately: true }) });
+        showMessage(document.getElementById(messageId), "Private reply sent to the user.", "success");
+        await loadManagerReports(usersListId, containerId, headingId, messageId, selectedUserId);
+      } catch (error) { showMessage(document.getElementById(messageId), error.message); }
+    }));
+    container.querySelectorAll("[data-send-private-chat]").forEach(button => button.addEventListener("click", async () => {
+      const reportId = button.dataset.sendPrivateChat;
+      const field = container.querySelector(`[data-private-chat-text="${reportId}"]`);
+      try {
+        await api(`/api/manager/reports/${reportId}/private-chat`, { method: "POST", body: JSON.stringify({ text: field.value, recipientId: button.dataset.chatRecipient }) });
+        showMessage(document.getElementById(messageId), "Private message sent to " + (seniorUserView ? "the Line Manager." : "the Senior user."), "success");
+        await loadManagerReports(usersListId, containerId, headingId, messageId, selectedUserId);
+      } catch (error) { showMessage(document.getElementById(messageId), error.message); }
     }));
     container.querySelectorAll("[data-send-feedback]").forEach(button => button.addEventListener("click", async () => {
       const reportId = button.dataset.sendFeedback; const feedbackId = button.dataset.feedbackId;

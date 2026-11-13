@@ -33,6 +33,9 @@ function notificationsForUser(user) {
       for (const reply of comment.replies || []) if (reply.authorId !== user.id) add('community', `reply:${reply.id}`, 'New community reply');
     }
   }
+  for (const report of db.reports) for (const message of report.privateMessages || []) {
+    if (message.recipientId === user.id && message.authorId !== user.id) add('manager-reports', `private-report-chat:${message.id}`, 'Private report chat message');
+  }
   if (user.role === 'user') {
     for (const activity of db.activities.filter(item => item.assigneeIds.includes(user.id))) {
       add('assigned', `assigned:${activity.id}:${activity.createdAt}`, 'Assigned activity');
@@ -709,7 +712,7 @@ async function handleRequest(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/api/my/reports') {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
-      const reports = db.reports.filter(report => report.userId === user.id && (!isHeadUser(user) || reportDepartment(report) === user.department)).sort((a, b) => b.submittedAt.localeCompare(a.submittedAt)).map(report => ({ ...report, feedback: (report.feedback || []).filter(feedback => feedback.sentAt) }));
+      const reports = db.reports.filter(report => report.userId === user.id && (!isHeadUser(user) || reportDepartment(report) === user.department)).sort((a, b) => b.submittedAt.localeCompare(a.submittedAt)).map(report => ({ ...report, privateMessages: [], feedback: (report.feedback || []).filter(feedback => feedback.sentAt) }));
       return send(res, 200, { reports });
     }
     if (req.method === 'GET' && url.pathname === '/api/my/activities') {
@@ -813,7 +816,9 @@ async function handleRequest(req, res) {
       const assignedIds = new Set(assignedUsers.map(item => item.id));
       const reports = db.reports.filter(report => isSeniorUser(user) || (isHeadUser(user) && Boolean(user.department) && reportDepartment(report) === user.department) || (!isHeadUser(user) && !isSeniorUser(user) && assignedIds.has(report.userId) && report.lineManagerId === user.id)).map(report => {
         const author = db.users.find(item => item.id === report.userId);
-        return { ...report, author: author ? { fullName: author.fullName, email: author.email, department: author.department } : null };
+        const lineManager = db.users.find(item => item.id === report.lineManagerId);
+        const privateMessages = (report.privateMessages || []).filter(message => message.authorId === user.id || message.recipientId === user.id).map(({ id, authorId, authorName, recipientId, text, createdAt }) => ({ id, authorId, authorName, recipientId, text, createdAt }));
+        return { ...report, privateMessages, lineManager: lineManager ? { id: lineManager.id, fullName: lineManager.fullName } : null, author: author ? { fullName: author.fullName, email: author.email, department: author.department } : null };
       });
       if (isHeadUser(user)) {
         for (const report of reports) if (!assignedIds.has(report.userId)) {
@@ -823,6 +828,30 @@ async function handleRequest(req, res) {
       }
       return send(res, 200, { assignedUsers, reports });
     }
+    const privateReportChatMatch = url.pathname.match(/^\/api\/manager\/reports\/([\w-]+)\/private-chat$/);
+    if (req.method === 'POST' && privateReportChatMatch) {
+      if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Report review access required.' });
+      const report = db.reports.find(item => item.id === privateReportChatMatch[1] && canReviewReport(user, item));
+      if (!report) return send(res, 404, { error: 'Report not found.' });
+      const body = await readBody(req); const text = String(body.text || '').trim(); const recipientId = String(body.recipientId || '');
+      if (!text || text.length > 5000) return send(res, 400, { error: 'Enter a private message of 1 to 5,000 characters.' });
+      let recipient;
+      if (isSeniorUser(user)) {
+        if (recipientId !== report.lineManagerId) return send(res, 400, { error: 'Choose the Line Manager assigned to this report.' });
+        recipient = db.users.find(item => item.id === recipientId && item.active !== false);
+      } else {
+        const isReportManager = report.lineManagerId === user.id;
+        const isSeniorParticipant = (report.privateMessages || []).some(message => message.authorId === recipientId && isSeniorUser(db.users.find(item => item.id === message.authorId) || {}) && message.recipientId === user.id);
+        if (!isReportManager || !isSeniorParticipant) return send(res, 403, { error: 'Only the assigned Line Manager and a participating Senior user can use this private chat.' });
+        recipient = db.users.find(item => item.id === recipientId && isSeniorUser(item) && item.active !== false);
+      }
+      if (!recipient) return send(res, 404, { error: 'Chat recipient is unavailable.' });
+      if (!Array.isArray(report.privateMessages)) report.privateMessages = [];
+      const message = { id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: recipient.id, text, createdAt: new Date().toISOString() };
+      report.privateMessages.push(message); await persist();
+      queueEmailNotifications([recipient], { type: 'Private Report Chat', subject: 'New private report chat message', description: text, actor: user.fullName, dashboard: 'manager-reports' });
+      return send(res, 201, { message });
+    }
     const feedbackMatch = url.pathname.match(/^\/api\/manager\/reports\/([\w-]+)\/feedback$/);
     if (req.method === 'POST' && feedbackMatch) {
       if (!['user', 'admin'].includes(user.role)) return send(res, 403, { error: 'Line Manager access required.' });
@@ -831,8 +860,11 @@ async function handleRequest(req, res) {
       const body = await readBody(req); const text = String(body.feedback || '').trim();
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter feedback of 1 to 5,000 characters.' });
       if (!Array.isArray(report.feedback)) report.feedback = [];
-      const feedback = { id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, text, createdAt: new Date().toISOString(), sentAt: null, replies: [] };
-      report.feedback.push(feedback); await persist(); return send(res, 201, { feedback });
+      const sentAt = body.sendImmediately ? new Date().toISOString() : null;
+      const feedback = { id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, text, createdAt: new Date().toISOString(), sentAt, replies: [] };
+      report.feedback.push(feedback); await persist();
+      if (sentAt) { const recipient = db.users.find(item => item.id === report.userId && item.active !== false); queueEmailNotifications(recipient ? [recipient] : [], { type: 'Private Report Reply', subject: 'Private reply on your weekly report', description: text, actor: user.fullName, dashboard: 'reports' }); }
+      return send(res, 201, { feedback });
     }
     const sendFeedbackMatch = url.pathname.match(/^\/api\/manager\/reports\/([\w-]+)\/feedback\/([\w-]+)\/send$/);
     if (req.method === 'POST' && sendFeedbackMatch) {
