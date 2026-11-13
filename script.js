@@ -24,6 +24,7 @@ let draftSaveTimer = null;
 let loadingDraft = false;
 let publicHolidayMap = new Map();
 let notificationTimer = null;
+let managerActivityRetryTimer = null;
 async function refreshNotifications() {
   if (!signedInUser) return;
   try {
@@ -46,13 +47,19 @@ async function markDashboardNotificationsRead(section) {
   finally { await refreshNotifications(); }
 }
 async function api(url, options = {}) {
-  let response;
-  try {
-    response = await fetch(url, { credentials: "same-origin", ...options, headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers } });
-  } catch (error) {
-    if (window.location.protocol === "file:") throw new Error("The portal was opened as a local file. Start the app with `npm start`, then open http://localhost:3000.");
-    if (error instanceof TypeError) throw new Error(`Could not connect to the portal API at ${window.location.origin}${url}. Check that the app server or deployment is online, then reload.`);
-    throw error;
+  let response; const method = String(options.method || "GET").toUpperCase(); const attempts = ["GET", "HEAD"].includes(method) ? 3 : 1;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      response = await fetch(url, { credentials: "same-origin", ...options, headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers } });
+      break;
+    } catch (error) {
+      if (window.location.protocol === "file:") throw new Error("The portal was opened as a local file. Start the app with `npm start`, then open http://localhost:3000.");
+      if (!(error instanceof TypeError)) throw error;
+      if (attempt + 1 < attempts) { await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1))); continue; }
+      const connectionError = new Error(`Could not connect to the portal API at ${window.location.origin}${url}.`);
+      connectionError.code = "API_NETWORK_ERROR";
+      throw connectionError;
+    }
   }
   const responseText = await response.text();
   let result;
@@ -601,6 +608,16 @@ function collapseActivityCards(container) {
     card.replaceWith(details);
   });
 }
+function handleManagerActivitiesLoadError(prefix, messageNode, error) {
+  if (error.code !== "API_NETWORK_ERROR") { showMessage(messageNode, error.message); return; }
+  messageNode.textContent = "Activities are temporarily unavailable. The page will retry automatically.";
+  messageNode.className = "form-message";
+  messageNode.dataset.retryNotice = "true";
+  clearTimeout(managerActivityRetryTimer);
+  managerActivityRetryTimer = setTimeout(() => {
+    if (signedInUser && activeDashboard === "manager-activities") loadManagerActivities(prefix);
+  }, 5000);
+}
 function readActivityFiles(files) {
   return Promise.all([...files].map(file => new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve({ name: file.name, data: reader.result }); reader.onerror = () => reject(new Error(`Could not read ${file.name}.`)); reader.readAsDataURL(file); })));
 }
@@ -628,6 +645,9 @@ async function loadManagerActivities(prefix) {
   const messageNode = document.getElementById(admin ? "adminActivityMessage" : "managerActivityMessage");
   try {
     const { assignedUsers, activities } = await api("/api/manager/activities");
+    clearTimeout(managerActivityRetryTimer);
+    managerActivityRetryTimer = null;
+    if (messageNode.dataset.retryNotice) { messageNode.textContent = ""; messageNode.className = "form-message"; delete messageNode.dataset.retryNotice; }
     activities.splice(0, activities.length, ...newestFirst(activities, item => newestFirst(item.updates)[0]?.createdAt || item.updatedAt || item.createdAt));
     usersNode.innerHTML = assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}">${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("") || '<p class="empty-reports">No active users are available in your oversight scope.</p>';
     list.innerHTML = activities.map(activity => `<article class="manager-report-card activity-card"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · Assigned to ${activity.assignees.map(item => escapeHtml(item.fullName)).join(", ")}</p></div><span class="report-date">Created ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header><details class="activity-edit-details"><summary>Edit activity details</summary><form class="activity-edit-form" data-update-activity="${escapeHtml(activity.id)}"><label>Activity title<input name="title" maxlength="200" value="${escapeHtml(activity.title)}" required></label><label>Instructions<textarea name="description" maxlength="5000" required>${escapeHtml(activity.description)}</textarea></label><label>Deadline<input name="deadline" type="date" value="${escapeHtml(activity.deadline)}" required></label>${activityAttachmentsMarkup(activity)}<label>Replace or add documents <span class="field-hint">Current files stay attached; select additional files</span><input name="attachments" type="file" multiple></label><fieldset><legend>Assigned users</legend><div class="assignee-options">${assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}" ${activity.assigneeIds.includes(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("")}</div></fieldset><input type="hidden" name="previousDeadline" value="${escapeHtml(activity.deadline)}"><button class="btn btn-secondary" type="submit">Save activity changes</button></form></details><p class="activity-description">${escapeHtml(activity.description)}</p>${activityAttachmentsMarkup(activity)}${activity.assignees.map(person => { const updates = activity.updates.filter(update => update.authorId === person.id || update.recipientId === person.id); const status = activity.statusByUser?.[person.id] || "Not Started"; const state = deadlineState(activity.deadline, status === "Completed"); return `<div class="assignee-progress"><h4>${escapeHtml(person.fullName)} · ${escapeHtml(status)} · <span class="deadline-indicator" style="--deadline-indicator-color:${deadlineIndicatorColor(activity.deadline, status === "Completed")}">${escapeHtml(state)}</span></h4>${activityUpdatesMarkup(updates, activity.id)}<div class="activity-reply-controls"><label>Reply to ${escapeHtml(person.fullName)}<textarea data-manager-reply="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" maxlength="5000" placeholder="Write guidance or a reply..."></textarea></label><label>Attach documents<input data-manager-files="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" type="file" multiple></label><button type="button" class="btn btn-secondary" data-send-manager-reply="${escapeHtml(activity.id)}" data-reply-user="${escapeHtml(person.id)}">Send reply</button></div></div>`; }).join("")}</article>`).join("") || '<p class="empty-reports">No activities in your oversight scope yet.</p>';
@@ -647,7 +667,7 @@ async function loadManagerActivities(prefix) {
       try { const files = [...(form.elements.attachments.files || [])]; if (files.length > 10 || files.reduce((sum, file) => sum + file.size, 0) > 50 * 1024 * 1024) throw new Error("Attach up to ten files with a combined size no larger than 50 MB."); const attachments = await readActivityFiles(files); await api("/api/manager/activities", { method: "POST", body: JSON.stringify({ title: data.get("title"), description: data.get("description"), deadline: data.get("deadline"), assigneeIds, attachments }) }); form.reset(); showMessage(messageNode, "Activity assigned successfully.", "success"); await loadManagerActivities(prefix); }
       catch (error) { showMessage(messageNode, error.message); }
     };
-  } catch (error) { showMessage(messageNode, error.message); }
+  } catch (error) { handleManagerActivitiesLoadError(prefix, messageNode, error); }
 }
 
 function privateReportChatMarkup(report, seniorUserView) {
