@@ -95,7 +95,7 @@
     </section>
     <section id="adminActivitySection" class="manager-review-section" aria-label="Line Manager activities" hidden>
       <div class="section-heading"><div><h2>Activities and deadlines</h2><p>Create activities within your oversight scope, monitor progress, and provide guidance.</p></div></div>
-      <form id="adminActivityForm" class="activity-create-form"><label>Activity title<input name="title" maxlength="200" required></label><label>Instructions<textarea name="description" maxlength="5000" required></textarea></label><label>Deadline<input name="deadline" type="date" required></label><fieldset><legend>Assign to</legend><div id="adminActivityAssignees" class="assignee-options"></div></fieldset><button class="btn btn-primary" type="submit">Create activity</button></form>
+      <form id="adminActivityForm" class="activity-create-form"><label>Activity title<input name="title" maxlength="200" required></label><label>Instructions<textarea name="description" maxlength="5000" required></textarea></label><label>Deadline<input name="deadline" type="date" required></label><label>Attach documents <span class="field-hint">Up to 10 files, 50 MB combined</span><input name="attachments" type="file" multiple></label><fieldset><legend>Assign to</legend><div id="adminActivityAssignees" class="assignee-options"></div></fieldset><button class="btn btn-primary" type="submit">Create activity</button></form>
       <p id="adminActivityMessage" class="form-message" role="status" aria-live="polite"></p><div id="adminActivities" class="manager-reports"></div>
     </section>
     <dialog id="editUserDialog" class="edit-user-dialog">
@@ -173,7 +173,7 @@
     </section>
     <section id="managerActivitySection" class="manager-review-section" hidden>
       <div class="section-heading"><div><h2>Activities and deadlines</h2><p>Create activities within your oversight scope, monitor progress, and provide guidance.</p></div></div>
-      <form id="managerActivityForm" class="activity-create-form"><label>Activity title<input name="title" maxlength="200" required></label><label>Instructions<textarea name="description" maxlength="5000" required></textarea></label><label>Deadline<input name="deadline" type="date" required></label><fieldset><legend>Assign to</legend><div id="managerActivityAssignees" class="assignee-options"></div></fieldset><button class="btn btn-primary" type="submit">Create activity</button></form>
+      <form id="managerActivityForm" class="activity-create-form"><label>Activity title<input name="title" maxlength="200" required></label><label>Instructions<textarea name="description" maxlength="5000" required></textarea></label><label>Deadline<input name="deadline" type="date" required></label><label>Attach documents <span class="field-hint">Up to 10 files, 50 MB combined</span><input name="attachments" type="file" multiple></label><fieldset><legend>Assign to</legend><div id="managerActivityAssignees" class="assignee-options"></div></fieldset><button class="btn btn-primary" type="submit">Create activity</button></form>
       <p id="managerActivityMessage" class="form-message" role="status" aria-live="polite"></p><div id="managerActivities" class="manager-reports"></div>
     </section>
 

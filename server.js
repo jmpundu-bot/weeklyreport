@@ -123,8 +123,26 @@ function parseDataUri(value) {
   const match = String(value || '').match(/^data:([\w.+/-]+);base64,([A-Za-z0-9+/]+=*)$/);
   return match ? { contentType: match[1], encoded: match[2] } : null;
 }
+async function activityAttachments(input, existing = []) {
+  if (!Array.isArray(input) || input.length > 10) throw new Error('Attach up to ten files per activity.');
+  const attachments = [];
+  for (const item of input) {
+    if (item.id && existing.some(saved => saved.id === item.id)) { attachments.push(existing.find(saved => saved.id === item.id)); continue; }
+    const name = String(item.name || '').replace(/[\\/\0-\x1f]/g, '').slice(0, 180);
+    const match = String(item.data || '').match(/^data:([\w.+/-]+);base64,([A-Za-z0-9+/]+=*)$/);
+    if (!name || !match) throw new Error('Each attachment must be a valid file.');
+    attachments.push({ id: crypto.randomUUID(), name, mimeType: match[1], data: item.data });
+  }
+  const sizes = await Promise.all(attachments.map(async item => {
+    const data = item.data || (item.assetId ? await readAssetDataUri(item.assetId) : '');
+    const asset = parseDataUri(data); return asset ? Buffer.byteLength(asset.encoded, 'base64') : 0;
+  }));
+  if (sizes.reduce((sum, size) => sum + size, 0) > 50 * 1024 * 1024) throw new Error('All attachments on an activity must total no more than 50 MB.');
+  return attachments;
+}
+const publicActivityUpdate = update => ({ ...update, attachments: (update.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })) });
 function databaseHasInlineAssets(database) {
-  return database.users.some(user => Boolean(parseDataUri(user.profilePicture))) || database.communityPosts.some(post => (post.attachments || []).some(item => Boolean(parseDataUri(item.data))));
+  return database.users.some(user => Boolean(parseDataUri(user.profilePicture))) || database.communityPosts.some(post => (post.attachments || []).some(item => Boolean(parseDataUri(item.data)))) || database.activities.some(activity => (activity.attachments || []).some(item => Boolean(parseDataUri(item.data))) || (activity.updates || []).some(update => (update.attachments || []).some(item => Boolean(parseDataUri(item.data)))));
 }
 function persist() {
   if (!sql || !pool) return Promise.reject(new Error('The Neon database is not initialized.'));
@@ -148,6 +166,16 @@ function persist() {
       delete attachment.data;
     }
   }
+  for (const activity of snapshot.activities) {
+    for (const attachment of activity.attachments || []) {
+      const asset = parseDataUri(attachment.data);
+      if (asset) { const id = 'activity:' + activity.id + ':' + attachment.id; assets.push({ id, ...asset }); attachment.assetId = id; delete attachment.data; }
+    }
+    for (const update of activity.updates || []) for (const attachment of update.attachments || []) {
+      const asset = parseDataUri(attachment.data);
+      if (asset) { const id = 'activity-update:' + update.id + ':' + attachment.id; assets.push({ id, ...asset }); attachment.assetId = id; delete attachment.data; }
+    }
+  }
   const serialized = JSON.stringify(snapshot);
   persistenceQueue = persistenceQueue.catch(() => {}).then(async () => {
     for (const asset of assets) await pool.query('INSERT INTO camfed_report_assets (id, content_type, data, updated_at) VALUES ($1, $2, $3, now()) ON CONFLICT (id) DO UPDATE SET content_type = EXCLUDED.content_type, data = EXCLUDED.data, updated_at = now()', [asset.id, asset.contentType, Buffer.from(asset.encoded, 'base64')]);
@@ -160,6 +188,20 @@ function persist() {
       for (const attachment of post.attachments || []) {
         const savedAttachment = saved?.attachments?.find(item => item.id === attachment.id);
         if (savedAttachment?.assetId && attachment.data) { attachment.assetId = savedAttachment.assetId; delete attachment.data; }
+      }
+    }
+    for (const activity of db.activities) {
+      const saved = snapshot.activities.find(item => item.id === activity.id);
+      for (const attachment of activity.attachments || []) {
+        const savedAttachment = saved?.attachments?.find(item => item.id === attachment.id);
+        if (savedAttachment?.assetId && attachment.data) { attachment.assetId = savedAttachment.assetId; delete attachment.data; }
+      }
+      for (const update of activity.updates || []) {
+        const savedUpdate = saved?.updates?.find(item => item.id === update.id);
+        for (const attachment of update.attachments || []) {
+          const savedAttachment = savedUpdate?.attachments?.find(item => item.id === attachment.id);
+          if (savedAttachment?.assetId && attachment.data) { attachment.assetId = savedAttachment.assetId; delete attachment.data; }
+        }
       }
     }
     await sql`INSERT INTO camfed_report_state (id, data, updated_at) VALUES (1, ${serialized}::jsonb, now()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`;
@@ -443,7 +485,7 @@ async function handleRequest(req, res) {
       return res.end(bytes);
     }
     if (url.pathname === '/api/community/posts' && req.method === 'POST') {
-      const body = await readBody(req, 70 * 1024 * 1024);
+      const body = await readBody(req);
       const text = String(body.text || '').trim();
       const title = String(body.title || '').trim();
       const allowedTypes = ['update', 'story', 'announcement', 'news', 'other'];
@@ -469,7 +511,7 @@ async function handleRequest(req, res) {
       const post = db.communityPosts.find(item => item.id === communityPostMatch[1] && item.authorId === user.id);
       if (!post) return send(res, 404, { error: 'Your post was not found.' });
       if (req.method === 'DELETE') { db.communityPosts = db.communityPosts.filter(item => item.id !== post.id); await persist(); return send(res, 200, { ok: true }); }
-      const body = await readBody(req, 70 * 1024 * 1024);
+      const body = await readBody(req);
       const text = String(body.text || '').trim(); const title = String(body.title || '').trim();
       if (!title || title.length > 160 || !text || text.length > 10000 || !['update', 'story', 'announcement', 'news', 'other'].includes(body.type)) return send(res, 400, { error: 'Enter a title, message, and valid post type.' });
       if (Array.isArray(body.attachments)) {
@@ -672,18 +714,29 @@ async function handleRequest(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/api/my/activities') {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
-      const activities = db.activities.filter(item => item.assigneeIds.includes(user.id)).map(item => ({ id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, status: item.statusByUser?.[user.id] || 'Not Started', updates: item.updates.filter(update => update.authorId === user.id || update.recipientId === user.id) }));
+      const activities = db.activities.filter(item => item.assigneeIds.includes(user.id)).map(item => ({ id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), status: item.statusByUser?.[user.id] || 'Not Started', updates: item.updates.filter(update => update.authorId === user.id || update.recipientId === user.id).map(publicActivityUpdate) }));
       return send(res, 200, { activities });
+    }
+    const activityAttachmentMatch = url.pathname.match(/^\/api\/activities\/([\w-]+)\/attachments\/([\w-]+)$/);
+    if (req.method === 'GET' && activityAttachmentMatch) {
+      const activity = db.activities.find(item => item.id === activityAttachmentMatch[1]);
+      if (!activity || (!activity.assigneeIds.includes(user.id) && (!canOverseeActivities(user) || !canManageActivity(user, activity, activityScope(user))))) return send(res, 404, { error: 'Activity attachment not found.' });
+      const attachment = (activity.attachments || []).find(item => item.id === activityAttachmentMatch[2]) || (activity.updates || []).flatMap(update => update.attachments || []).find(item => item.id === activityAttachmentMatch[2]);
+      const asset = parseDataUri(attachment?.data || await readAssetDataUri(attachment?.assetId));
+      if (!attachment || !asset) return send(res, 404, { error: 'Activity attachment not found.' });
+      const bytes = Buffer.from(asset.encoded, 'base64');
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(attachment.name)}`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store' }); res.end(bytes); return;
     }
     const activityUpdateMatch = url.pathname.match(/^\/api\/my\/activities\/([\w-]+)\/updates$/);
     if (req.method === 'POST' && activityUpdateMatch) {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
       const activity = db.activities.find(item => item.id === activityUpdateMatch[1] && item.assigneeIds.includes(user.id));
       if (!activity) return send(res, 404, { error: 'Assigned activity not found.' });
-      const body = await readBody(req); const text = String(body.text || '').trim(); const requestedStatus = String(body.status || 'In Progress');
+      const body = await readBody(req, 70 * 1024 * 1024); const text = String(body.text || '').trim(); const requestedStatus = String(body.status || 'In Progress');
       const status = text.toLowerCase() === 'implemented' ? 'Completed' : requestedStatus;
       if (!text || text.length > 5000 || !['Not Started', 'In Progress', 'Completed', 'On Hold'].includes(status)) return send(res, 400, { error: 'Enter an update (up to 5,000 characters) and choose a valid status.' });
-      activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: user.id, text, status, createdAt: new Date().toISOString() });
+      let attachments; try { attachments = await activityAttachments(body.attachments || []); } catch (error) { return send(res, 400, { error: error.message }); }
+      activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: user.id, text, status, attachments, createdAt: new Date().toISOString() });
       activity.statusByUser = { ...(activity.statusByUser || {}), [user.id]: status };
       await persist(); return send(res, 201, { ok: true });
     }
@@ -692,7 +745,7 @@ async function handleRequest(req, res) {
       const scope = activityScope(user);
       const activities = db.activities.filter(item => isSeniorUser(user) || (isHeadUser(user) ? canManageActivity(user, item, scope) : item.lineManagerId === user.id)).map(item => {
         const assigneeIds = item.assigneeIds.filter(id => scope.visibleIds.has(id));
-        return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, updatedAt: item.updatedAt, assigneeIds, assignees: assigneeIds.map(id => { const target = scope.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), statusByUser: Object.fromEntries(Object.entries(item.statusByUser || {}).filter(([id]) => scope.visibleIds.has(id))), updates: item.updates.filter(update => scope.visibleIds.has(update.authorId) || (update.recipientId && scope.visibleIds.has(update.recipientId))) };
+        return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, updatedAt: item.updatedAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), assigneeIds, assignees: assigneeIds.map(id => { const target = scope.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), statusByUser: Object.fromEntries(Object.entries(item.statusByUser || {}).filter(([id]) => scope.visibleIds.has(id))), updates: item.updates.filter(update => scope.visibleIds.has(update.authorId) || (update.recipientId && scope.visibleIds.has(update.recipientId))).map(publicActivityUpdate) };
       });
       return send(res, 200, { assignedUsers: scope.users.filter(item => item.active !== false).map(item => ({ id: item.id, fullName: item.fullName, email: item.email })), activities });
     }
@@ -702,7 +755,7 @@ async function handleRequest(req, res) {
       const scope = activityScope(user);
       const activity = db.activities.find(item => item.id === managerActivityEditMatch[1] && canManageActivity(user, item, scope));
       if (!activity) return send(res, 404, { error: 'Activity not found.' });
-      const body = await readBody(req);
+      const body = await readBody(req, 70 * 1024 * 1024);
       const title = String(body.title || '').trim(); const description = String(body.description || '').trim(); const deadline = String(body.deadline || '');
       const previousAssigneeIds = [...activity.assigneeIds];
       const previousTitle = activity.title; const previousDescription = activity.description; const previousDeadline = activity.deadline;
@@ -712,9 +765,13 @@ async function handleRequest(req, res) {
       const dateValid = /^\d{4}-\d{2}-\d{2}$/.test(deadline) && !Number.isNaN(Date.parse(deadline + 'T00:00:00Z')) && new Date(deadline + 'T00:00:00Z').toISOString().slice(0, 10) === deadline;
       if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !selectedIds.length || selectedIds.some(id => !scope.assignableIds.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select active users within your oversight scope.' });
       const assignmentChanged = previousAssigneeIds.length !== assigneeIds.length || previousAssigneeIds.some(id => !assigneeIds.includes(id));
-      const changed = title !== previousTitle || description !== previousDescription || deadline !== previousDeadline || assignmentChanged;
+      let attachments;
+      try { attachments = await activityAttachments(body.attachments || (activity.attachments || []).map(({ id }) => ({ id })), activity.attachments || []); }
+      catch (error) { return send(res, 400, { error: error.message }); }
+      const attachmentChanged = JSON.stringify(attachments.map(({ id }) => id)) !== JSON.stringify((activity.attachments || []).map(({ id }) => id));
+      const changed = title !== previousTitle || description !== previousDescription || deadline !== previousDeadline || assignmentChanged || attachmentChanged;
       if (!changed) return send(res, 200, { activity, changed: false });
-      activity.title = title; activity.description = description; activity.deadline = deadline; activity.assigneeIds = assigneeIds; activity.updatedAt = new Date().toISOString();
+      activity.title = title; activity.description = description; activity.deadline = deadline; activity.assigneeIds = assigneeIds; activity.attachments = attachments; activity.updatedAt = new Date().toISOString();
       await persist();
       const affectedIds = new Set([...previousAssigneeIds, ...assigneeIds]);
       const recipients = db.users.filter(person => affectedIds.has(person.id) && person.active !== false);
@@ -729,19 +786,23 @@ async function handleRequest(req, res) {
       const activity = db.activities.find(item => item.id === activityId && canManageActivity(user, item, scope) && item.assigneeIds.includes(assigneeId));
       const assignee = db.users.find(item => item.id === assigneeId && item.role === 'user' && scope.assignableIds.has(item.id));
       if (!activity || !assignee) return send(res, 404, { error: 'Assigned activity participant not found.' });
-      const body = await readBody(req); const text = String(body.text || '').trim();
+      const body = await readBody(req, 70 * 1024 * 1024); const text = String(body.text || '').trim();
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter a reply of 1 to 5,000 characters.' });
-      activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: assigneeId, text, status: activity.statusByUser?.[assigneeId] || 'Not Started', createdAt: new Date().toISOString() });
+      let attachments; try { attachments = await activityAttachments(body.attachments || []); } catch (error) { return send(res, 400, { error: error.message }); }
+      activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: assigneeId, text, status: activity.statusByUser?.[assigneeId] || 'Not Started', attachments, createdAt: new Date().toISOString() });
       await persist(); queueEmailNotifications([assignee], { type: 'Deadline Activity Update', subject: 'Activity update: ' + activity.title, description: text + '\nDeadline: ' + activity.deadline, actor: user.fullName, dashboard: 'assigned' }); return send(res, 201, { ok: true });
     }
     if (req.method === 'POST' && url.pathname === '/api/manager/activities') {
       if (!canOverseeActivities(user)) return send(res, 403, { error: 'Activity oversight access required.' });
       const scope = activityScope(user);
-      const body = await readBody(req); const title = String(body.title || '').trim(); const description = String(body.description || '').trim(); const deadline = String(body.deadline || '');
+      const body = await readBody(req, 70 * 1024 * 1024); const title = String(body.title || '').trim(); const description = String(body.description || '').trim(); const deadline = String(body.deadline || '');
       const assigneeIds = [...new Set(Array.isArray(body.assigneeIds) ? body.assigneeIds.map(String) : [])];
       const dateValid = /^\d{4}-\d{2}-\d{2}$/.test(deadline) && !Number.isNaN(Date.parse(`${deadline}T00:00:00Z`)) && new Date(`${deadline}T00:00:00Z`).toISOString().slice(0, 10) === deadline;
       if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !assigneeIds.length || assigneeIds.some(id => !scope.assignableIds.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select active users within your oversight scope.' });
-      const activity = { id: crypto.randomUUID(), lineManagerId: user.id, title, description, deadline, assigneeIds, statusByUser: {}, updates: [], createdAt: new Date().toISOString() };
+      let attachments;
+      try { attachments = await activityAttachments(body.attachments || []); }
+      catch (error) { return send(res, 400, { error: error.message }); }
+      const activity = { id: crypto.randomUUID(), lineManagerId: user.id, title, description, deadline, assigneeIds, attachments, statusByUser: {}, updates: [], createdAt: new Date().toISOString() };
       db.activities.push(activity); await persist();
       queueEmailNotifications(db.users.filter(person => assigneeIds.includes(person.id)), { type: 'Deadline Activity Assigned', subject: 'New activity: ' + title, description: description + '\nDeadline: ' + deadline, actor: user.fullName, dashboard: 'assigned' });
       return send(res, 201, { activity });
