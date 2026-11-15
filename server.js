@@ -402,7 +402,7 @@ async function queueEmailNotifications(recipients, notice) {
 function publicUser(user) {
   const { password, ...safe } = user;
   if (safe.role === 'user' && !['user', 'senior_user', 'head'].includes(safe.accountRole)) safe.accountRole = 'user';
-  safe.isLineManager = db.users.some(item => item.lineManagerId === user.id) || db.reports.some(report => report.lineManagerId === user.id);
+  safe.isLineManager = db.users.some(item => item.lineManagerId === user.id) || db.reports.some(report => report.lineManagerId === user.id) || db.activities.some(activity => activity.lineManagerId === user.id);
   return safe;
 }
 const isSeniorUser = user => user.role === 'user' && user.accountRole === 'senior_user';
@@ -573,7 +573,7 @@ async function handleRequest(req, res) {
       const read = new Set(user.notificationsRead || []);
       const unread = notificationsForUser(user).filter(item => !read.has(item.id));
       const counts = Object.fromEntries([...new Set(unread.map(item => item.section))].map(section => [section, unread.filter(item => item.section === section).length]));
-      return send(res, 200, { counts, total: unread.length });
+      return send(res, 200, { counts, total: unread.length, isLineManager: publicUser(user).isLineManager });
     }
     if (req.method === 'POST' && url.pathname === '/api/notifications/read') {
       const body = await readBody(req); const section = String(body.section || '');
