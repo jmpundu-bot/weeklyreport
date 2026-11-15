@@ -598,8 +598,14 @@ function activityReviewMarkup(activity, assignee, updates) {
   if (!latestUpdate) return '<p class="empty-comments">Review options appear after the user submits a progress update.</p>';
   return `<form class="activity-review-form" data-activity-review="${escapeHtml(activity.id)}" data-review-user="${escapeHtml(assignee.id)}" data-review-update="${escapeHtml(latestUpdate.id)}"><h5>Review latest update</h5><label>Decision<select name="decision" required><option value="">Choose a review action</option><option value="Approved">Approved</option><option value="Rejected">Rejected</option><option value="Reassign">Reassign to user</option></select></label><label>Feedback or reason<textarea name="feedback" maxlength="5000" placeholder="Required when rejecting; optional for other decisions..."></textarea></label><label>Revised deadline <span class="field-hint">Optional; used when reassigning</span><input name="deadline" type="date" value="${escapeHtml(activity.deadline)}"></label><button type="submit" class="btn btn-secondary">Submit review</button></form>`;
 }
+const activityCardOpenState = new Map();
+function activityCardStateKey(container, activityId) { return `${container.id}:${activityId}`; }
 function activityCardOpenStates(container) {
-  return new Map([...container.querySelectorAll(":scope > .activity-card[data-activity-id]")].map(card => [card.dataset.activityId, card instanceof HTMLDetailsElement ? card.open : false]));
+  return new Map([...container.querySelectorAll(":scope > .activity-card[data-activity-id]")].map(card => {
+    const isOpen = card.tagName === "DETAILS" && card.open;
+    activityCardOpenState.set(activityCardStateKey(container, card.dataset.activityId), isOpen);
+    return [card.dataset.activityId, isOpen];
+  }));
 }
 function collapseActivityCards(container, openStates = new Map()) {
   container.querySelectorAll(":scope > .activity-card").forEach(card => {
@@ -611,7 +617,9 @@ function collapseActivityCards(container, openStates = new Map()) {
     const details = document.createElement("details");
     details.className = card.className;
     details.dataset.activityId = card.dataset.activityId;
-    details.open = openStates.has(card.dataset.activityId) ? openStates.get(card.dataset.activityId) : false;
+    const stateKey = activityCardStateKey(container, card.dataset.activityId);
+    details.open = openStates.has(card.dataset.activityId) ? openStates.get(card.dataset.activityId) : (activityCardOpenState.get(stateKey) ?? false);
+    details.addEventListener("toggle", () => activityCardOpenState.set(stateKey, details.open));
     const summary = document.createElement("summary");
     summary.className = "activity-card-summary";
     summary.innerHTML = `<span><strong>${escapeHtml(title?.textContent || "Activity")}</strong>${metadata ? `<small>${metadata.innerHTML}</small>` : ""}</span>${date ? date.outerHTML : ""}`;
