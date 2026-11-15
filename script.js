@@ -667,7 +667,8 @@ function activityProgressMarkup(activity, status, label = "Implementation progre
   const timeline = activityTimelineProgress(activity);
   const implementation = implementationProgress(status);
   const implementationLabel = typeof status === "number" ? `${implementation}% complete` : `${implementation}% · ${escapeHtml(status)}`;
-  return `<div class="activity-progress" aria-label="Activity progress"><label>Timeline <progress class="timeline-progress ${timelineProgressBand(timeline)}" max="100" value="${timeline}" aria-label="Timeline elapsed"></progress><span>${timeline}% elapsed</span></label><label>${escapeHtml(label)} <progress class="implementation-progress" max="100" value="${implementation}" aria-label="${escapeHtml(label)}"></progress><span>${implementationLabel}</span></label></div>`;
+  const progressBand = timelineProgressBand(timeline);
+  return `<div class="activity-progress" aria-label="Activity progress"><label>Timeline <progress class="timeline-progress ${progressBand}" max="100" value="${timeline}" aria-label="Timeline elapsed"></progress><span>${timeline}% elapsed</span></label><label>${escapeHtml(label)} <progress class="implementation-progress ${progressBand}" max="100" value="${implementation}" aria-label="${escapeHtml(label)}"></progress><span>${implementationLabel}</span></label></div>`;
 }
 async function downloadActivityHistoryReport(activity) {
   const pageWidth = 595; const pageHeight = 842; const scale = 2; const margin = 42; const bottom = pageHeight - 42;

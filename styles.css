@@ -239,10 +239,10 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .activity-progress progress::-webkit-progress-bar { border-radius: 999px; background: #e5ece6; }
 .activity-progress progress::-webkit-progress-value { border-radius: 999px; background: var(--green); }
 .activity-progress progress::-moz-progress-bar { border-radius: 999px; background: var(--green); }
-.activity-progress .timeline-progress.progress-light-orange::-webkit-progress-value, .activity-progress .timeline-progress.progress-light-orange::-moz-progress-bar { background: #f6c875; }
-.activity-progress .timeline-progress.progress-dark-orange::-webkit-progress-value, .activity-progress .timeline-progress.progress-dark-orange::-moz-progress-bar { background: #e9821c; }
-.activity-progress .timeline-progress.progress-light-red::-webkit-progress-value, .activity-progress .timeline-progress.progress-light-red::-moz-progress-bar { background: #ed8585; }
-.activity-progress .timeline-progress.progress-dark-red::-webkit-progress-value, .activity-progress .timeline-progress.progress-dark-red::-moz-progress-bar { background: #b4232f; }
+.activity-progress .progress-light-orange::-webkit-progress-value, .activity-progress .progress-light-orange::-moz-progress-bar { background: #f6c875; }
+.activity-progress .progress-dark-orange::-webkit-progress-value, .activity-progress .progress-dark-orange::-moz-progress-bar { background: #e9821c; }
+.activity-progress .progress-light-red::-webkit-progress-value, .activity-progress .progress-light-red::-moz-progress-bar { background: #ed8585; }
+.activity-progress .progress-dark-red::-webkit-progress-value, .activity-progress .progress-dark-red::-moz-progress-bar { background: #b4232f; }
 .activity-progress .implementation-progress::-webkit-progress-value, .activity-progress .implementation-progress::-moz-progress-bar { background: #d59421; }
 .activity-progress label span { color: var(--muted); font-size: 11px; font-weight: 500; }
 .activity-reply-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 10px; }
