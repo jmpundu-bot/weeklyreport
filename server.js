@@ -412,7 +412,8 @@ const canReviewReport = (user, report) => isSeniorUser(user) || (isHeadUser(user
 function activityScope(user) {
   const allUsers = db.users.filter(item => item.role === 'user');
   const scopedUsers = isSeniorUser(user) ? allUsers : isHeadUser(user) ? (user.department ? allUsers.filter(item => item.department === user.department) : []) : allUsers.filter(item => item.lineManagerId === user.id && item.active !== false);
-  return { visibleIds: new Set(scopedUsers.map(item => item.id)), assignableIds: new Set(scopedUsers.filter(item => item.active !== false).map(item => item.id)), users: scopedUsers };
+  const assignableUsers = isHeadUser(user) ? scopedUsers.filter(item => item.active !== false) : scopedUsers.filter(item => item.active !== false && item.lineManagerId === user.id);
+  return { visibleIds: new Set(scopedUsers.map(item => item.id)), assignableIds: new Set(assignableUsers.map(item => item.id)), users: scopedUsers, assignableUsers };
 }
 const canOverseeActivities = user => user.role === 'admin' || isSeniorUser(user) || (isHeadUser(user) && Boolean(user.department)) || (user.role === 'user' && (db.users.some(item => item.role === 'user' && item.lineManagerId === user.id) || db.activities.some(item => item.lineManagerId === user.id)));
 function canManageActivity(user, activity, scope = activityScope(user)) {
@@ -882,7 +883,7 @@ async function handleRequest(req, res) {
         const assigneeIds = item.assigneeIds.filter(id => scope.visibleIds.has(id));
         return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, updatedAt: item.updatedAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), assigneeIds, assignees: assigneeIds.map(id => { const target = scope.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), statusByUser: Object.fromEntries(Object.entries(item.statusByUser || {}).filter(([id]) => scope.visibleIds.has(id)).map(([id, status]) => [id, canonicalActivityStatus(status)])), history: activityHistory(item).filter(entry => !entry.assigneeId || scope.visibleIds.has(entry.assigneeId)), updates: item.updates.filter(update => scope.visibleIds.has(update.authorId) || (update.recipientId && scope.visibleIds.has(update.recipientId))).map(publicActivityUpdate) };
       });
-      return send(res, 200, { assignedUsers: scope.users.filter(item => item.active !== false).map(item => ({ id: item.id, fullName: item.fullName, email: item.email })), activities });
+      return send(res, 200, { assignedUsers: scope.assignableUsers.map(item => ({ id: item.id, fullName: item.fullName, email: item.email })), activities });
     }
     const managerActivityEditMatch = url.pathname.match(/^\/api\/manager\/activities\/([\w-]+)$/);
     if (req.method === 'PUT' && managerActivityEditMatch) {
@@ -897,8 +898,9 @@ async function handleRequest(req, res) {
       const selectedIds = [...new Set(Array.isArray(body.assigneeIds) ? body.assigneeIds.map(String) : previousAssigneeIds.filter(id => scope.assignableIds.has(id)))];
       const retainedIds = isSeniorUser(user) || isHeadUser(user) ? previousAssigneeIds.filter(id => !scope.assignableIds.has(id)) : [];
       const assigneeIds = [...new Set([...selectedIds, ...retainedIds])];
+      const hasValidAssigneeSelection = selectedIds.length > 0 || (isSeniorUser(user) && retainedIds.length > 0);
       const dateValid = /^\d{4}-\d{2}-\d{2}$/.test(deadline) && !Number.isNaN(Date.parse(deadline + 'T00:00:00Z')) && new Date(deadline + 'T00:00:00Z').toISOString().slice(0, 10) === deadline;
-      if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !selectedIds.length || selectedIds.some(id => !scope.assignableIds.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select active users within your oversight scope.' });
+      if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !hasValidAssigneeSelection || selectedIds.some(id => !scope.assignableIds.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select active users within your assignment scope.' });
       const assignmentChanged = previousAssigneeIds.length !== assigneeIds.length || previousAssigneeIds.some(id => !assigneeIds.includes(id));
       let attachments;
       try { attachments = await activityAttachments(body.attachments || (activity.attachments || []).map(({ id }) => ({ id })), activity.attachments || []); }
@@ -957,7 +959,7 @@ async function handleRequest(req, res) {
       const scope = activityScope(user);
       const [, activityId, assigneeId] = managerActivityReplyMatch;
       const activity = db.activities.find(item => item.id === activityId && canManageActivity(user, item, scope) && item.assigneeIds.includes(assigneeId));
-      const assignee = db.users.find(item => item.id === assigneeId && item.role === 'user' && scope.assignableIds.has(item.id));
+      const assignee = db.users.find(item => item.id === assigneeId && item.role === 'user' && item.active !== false && scope.visibleIds.has(item.id));
       if (!activity || !assignee) return send(res, 404, { error: 'Assigned activity participant not found.' });
       const body = await readBody(req, 70 * 1024 * 1024); const text = String(body.text || '').trim();
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter a reply of 1 to 5,000 characters.' });

@@ -605,7 +605,7 @@ function activityReviewMarkup(activity, assignee, updates) {
 }
 function selectAllAssigneesMarkup(userCount) {
   if (!userCount) return "";
-  const label = signedInUser?.accountRole === "head" ? `Select everyone in ${escapeHtml(signedInUser.department || "your department")}` : signedInUser?.isLineManager ? "Select everyone assigned to me" : "";
+  const label = signedInUser?.accountRole === "head" ? `Select everyone in ${escapeHtml(signedInUser.department || "your department")}` : signedInUser?.accountRole === "senior_user" ? "Select all my direct reports" : signedInUser?.isLineManager ? "Select everyone assigned to me" : "";
   return label ? `<div class="assignee-bulk-actions"><button type="button" class="btn btn-secondary" data-select-all-assignees>${label}</button><button type="button" class="btn btn-secondary" data-clear-assignees>Clear selection</button></div>` : "";
 }
 function bindBulkAssigneeActions(root) {
