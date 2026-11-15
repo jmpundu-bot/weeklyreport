@@ -235,24 +235,17 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .activity-review-form textarea { min-height: 60px; }
 .activity-review-form button { justify-self: start; }
 .activity-progress { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 20px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: #f8fbf8; }
-.activity-progress label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px 12px; margin: 0; color: var(--green-dark); font-size: 12px; font-weight: 700; }
-.activity-progress progress { grid-column: 1 / -1; width: 100%; height: 10px; overflow: hidden; border: 0; border-radius: 999px; appearance: none; background: #e5ece6; }
-.activity-progress progress::-webkit-progress-bar { border-radius: 999px; background: #e5ece6; }
-.activity-progress progress::-webkit-progress-value { border-radius: 999px; background: var(--green); }
-.activity-progress progress::-moz-progress-bar { border-radius: 999px; background: var(--green); }
-.activity-progress progress.progress-light-orange { background: #fce9c2; }
-.activity-progress progress.progress-light-orange::-webkit-progress-bar { background: #fce9c2; }
-.activity-progress progress.progress-light-orange::-webkit-progress-value, .activity-progress progress.progress-light-orange::-moz-progress-bar { background: #f6c875; }
-.activity-progress progress.progress-dark-orange { background: #f7dcc2; }
-.activity-progress progress.progress-dark-orange::-webkit-progress-bar { background: #f7dcc2; }
-.activity-progress progress.progress-dark-orange::-webkit-progress-value, .activity-progress progress.progress-dark-orange::-moz-progress-bar { background: #e9821c; }
-.activity-progress progress.progress-light-red { background: #f6dcdc; }
-.activity-progress progress.progress-light-red::-webkit-progress-bar { background: #f6dcdc; }
-.activity-progress progress.progress-light-red::-webkit-progress-value, .activity-progress progress.progress-light-red::-moz-progress-bar { background: #ed8585; }
-.activity-progress progress.progress-dark-red { background: #eac6c9; }
-.activity-progress progress.progress-dark-red::-webkit-progress-bar { background: #eac6c9; }
-.activity-progress progress.progress-dark-red::-webkit-progress-value, .activity-progress progress.progress-dark-red::-moz-progress-bar { background: #b4232f; }
-.activity-progress label span { color: var(--muted); font-size: 11px; font-weight: 500; }
+.activity-progress label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 7px 12px; margin: 0; color: var(--green-dark); font-size: 12px; font-weight: 700; }
+.activity-progress-track { position: relative; grid-column: 1 / -1; display: block; width: 100%; height: 12px; overflow: hidden; border-radius: 999px; isolation: isolate; background: var(--progress-track-color, #e5ece6); box-shadow: inset 0 1px 2px rgba(34, 52, 39, .12); }
+.activity-progress-fill { position: relative; display: block; width: var(--progress-value, 0%); height: 100%; min-width: 0; overflow: hidden; border-radius: inherit; background: var(--progress-fill-color, var(--green)); transition: width .9s cubic-bezier(.2, .75, .25, 1); }
+.activity-progress-track::after { position: absolute; z-index: 1; inset: 0; content: ""; pointer-events: none; background: linear-gradient(105deg, transparent 20%, rgba(255, 255, 255, .5) 48%, transparent 72%); transform: translateX(-110%); animation: activity-progress-shimmer 2.8s ease-in-out infinite; }
+.activity-progress-track.progress-light-orange { --progress-track-color: #fce9c2; --progress-fill-color: #f6c875; }
+.activity-progress-track.progress-dark-orange { --progress-track-color: #f7dcc2; --progress-fill-color: #e9821c; }
+.activity-progress-track.progress-light-red { --progress-track-color: #f6dcdc; --progress-fill-color: #ed8585; }
+.activity-progress-track.progress-dark-red { --progress-track-color: #eac6c9; --progress-fill-color: #b4232f; }
+@keyframes activity-progress-shimmer { to { transform: translateX(110%); } }
+.activity-progress label > span:first-of-type { color: var(--muted); font-size: 11px; font-weight: 500; }
+@media (prefers-reduced-motion: reduce) { .activity-progress-fill { transition: none; } .activity-progress-track::after { animation: none; transform: translateX(0); opacity: .12; } }
 .activity-reply-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 10px; }
 .activity-reply-controls label { margin: 0; }
 .activity-reply-controls textarea { min-height: 58px; }
