@@ -816,7 +816,8 @@ async function loadManagerActivities(prefix) {
     activities.splice(0, activities.length, ...newestFirst(activities, item => newestFirst(item.updates)[0]?.createdAt || item.updatedAt || item.createdAt));
     const openStates = activityCardOpenStates(list);
     const selectedAssigneeIds = new Set([...usersNode.querySelectorAll('input[name="assigneeIds"]:checked')].map(input => input.value));
-    const selectAllMode = usersNode.dataset.selectAllMode === "true";
+    const savedSelectAllMode = usersNode.dataset.selectAllMode;
+    const selectAllMode = savedSelectAllMode === undefined ? Boolean(signedInUser?.isLineManager && signedInUser.accountRole !== "head") : savedSelectAllMode === "true";
     usersNode.innerHTML = selectAllAssigneesMarkup(assignedUsers.length) + (assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}">${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("") || '<p class="empty-reports">No active users are available in your oversight scope.</p>');
     usersNode.dataset.selectAllMode = String(selectAllMode);
     usersNode.querySelectorAll('input[name="assigneeIds"]').forEach(input => { input.checked = selectAllMode || selectedAssigneeIds.has(input.value); });
@@ -848,7 +849,7 @@ async function loadManagerActivities(prefix) {
     }));
     form.onsubmit = async event => {
       event.preventDefault(); const data = new FormData(form); const assigneeIds = data.getAll("assigneeIds");
-      try { const files = [...(form.elements.attachments.files || [])]; if (files.length > 10 || files.reduce((sum, file) => sum + file.size, 0) > 50 * 1024 * 1024) throw new Error("Attach up to ten files with a combined size no larger than 50 MB."); const attachments = await readActivityFiles(files); await api("/api/manager/activities", { method: "POST", body: JSON.stringify({ title: data.get("title"), description: data.get("description"), deadline: data.get("deadline"), assigneeIds, attachments }) }); form.reset(); usersNode.dataset.selectAllMode = "false"; showMessage(messageNode, "Activity assigned successfully.", "success"); await loadManagerActivities(prefix); }
+      try { const files = [...(form.elements.attachments.files || [])]; if (files.length > 10 || files.reduce((sum, file) => sum + file.size, 0) > 50 * 1024 * 1024) throw new Error("Attach up to ten files with a combined size no larger than 50 MB."); const attachments = await readActivityFiles(files); await api("/api/manager/activities", { method: "POST", body: JSON.stringify({ title: data.get("title"), description: data.get("description"), deadline: data.get("deadline"), assigneeIds, attachments }) }); form.reset(); delete usersNode.dataset.selectAllMode; showMessage(messageNode, "Activity assigned successfully.", "success"); await loadManagerActivities(prefix); }
       catch (error) { showMessage(messageNode, error.message); }
     };
   } catch (error) { handleManagerActivitiesLoadError(prefix, messageNode, error); }
