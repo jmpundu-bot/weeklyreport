@@ -5,5 +5,11 @@
       "source": "/api/:path*",
       "destination": "/api/handler?__route=/api/:path*"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/deadline-reminders",
+      "schedule": "0 6 * * *"
+    }
   ]
 }

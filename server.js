@@ -143,7 +143,23 @@ async function activityAttachments(input, existing = []) {
   if (sizes.reduce((sum, size) => sum + size, 0) > 50 * 1024 * 1024) throw new Error('All attachments on an activity must total no more than 50 MB.');
   return attachments;
 }
-const publicActivityUpdate = update => ({ ...update, attachments: (update.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })) });
+function canonicalActivityStatus(status) {
+  return ({ 'Not Started': 'Started', Completed: 'Implemented' })[status] || (['Started', 'In Progress', 'On Hold', 'Implemented'].includes(status) ? status : 'Started');
+}
+const publicActivityUpdate = update => ({ ...update, status: canonicalActivityStatus(update.status), attachments: (update.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })) });
+function activityHistory(activity) {
+  if (Array.isArray(activity.history)) return activity.history;
+  const history = [{ type: 'created', at: activity.createdAt, actorName: 'System', details: 'Activity created.', deadline: activity.deadline }];
+  for (const update of activity.updates || []) {
+    if (update.authorId && update.recipientId === update.authorId) history.push({ type: 'status_changed', at: update.createdAt, actorId: update.authorId, actorName: update.authorName, assigneeId: update.authorId, status: canonicalActivityStatus(update.status), details: update.text });
+    if (update.review) history.push({ type: update.review.decision.toLowerCase(), at: update.review.reviewedAt, actorId: update.review.reviewedById, actorName: update.review.reviewedByName, assigneeId: update.authorId, details: update.review.feedback, deadline: update.review.deadline || '' });
+  }
+  return history.sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
+}
+function recordActivityHistory(activity, entry) {
+  if (!Array.isArray(activity.history)) activity.history = activityHistory(activity);
+  activity.history.push({ id: crypto.randomUUID(), at: new Date().toISOString(), ...entry });
+}
 function databaseHasInlineAssets(database) {
   return database.users.some(user => Boolean(parseDataUri(user.profilePicture))) || database.communityPosts.some(post => (post.attachments || []).some(item => Boolean(parseDataUri(item.data)))) || database.activities.some(activity => (activity.attachments || []).some(item => Boolean(parseDataUri(item.data))) || (activity.updates || []).some(update => (update.attachments || []).some(item => Boolean(parseDataUri(item.data)))));
 }
@@ -356,24 +372,31 @@ async function sendSmtpEmail(to, subject, body) {
   socket.end();
 }
 let warnedEmailNotConfigured = false;
-function queueEmailNotifications(recipients, notice) {
+async function queueEmailNotifications(recipients, notice) {
   const config = smtpSettings();
   if (!config.host || !config.from || !config.username || !config.password) {
     if (!warnedEmailNotConfigured) {
       console.warn('Email notifications are disabled until SMTP_HOST, SMTP_USER, SMTP_PASSWORD, and SMTP_FROM are configured.');
       warnedEmailNotConfigured = true;
     }
-    return;
+    return [];
   }
-  const unique = [...new Map((recipients || []).filter(person => person && person.active !== false && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(person.email || ''))).map(person => [person.email.toLowerCase(), person])).values()];
-  if (!unique.length) return;
+  const unique = [...new Map((recipients || []).filter(person => person && person.id !== notice.actorId && person.active !== false).map(person => {
+    const notificationEmail = String(person.email || '').trim().toLowerCase();
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notificationEmail) ? [notificationEmail, { ...person, notificationEmail }] : null;
+  }).filter(Boolean)).values()];
+  if (!unique.length) return [];
   const makeBody = person => [notice.type, '', typeof notice.description === 'function' ? notice.description(person) : notice.description, '', 'Responsible: ' + notice.actor, '', 'Open this section: ' + dashboardLink(notice.dashboard)].join('\n');
-  setImmediate(async () => {
-    for (let index = 0; index < unique.length; index += 4) {
-      const results = await Promise.allSettled(unique.slice(index, index + 4).map(person => sendSmtpEmail(person.email, notice.subject, makeBody(person))));
-      for (const result of results.filter(item => item.status === 'rejected')) console.error('Email notification delivery failed:', result.reason?.message || 'Unknown SMTP error.');
-    }
-  });
+  const delivered = [];
+  for (let index = 0; index < unique.length; index += 4) {
+    const batch = unique.slice(index, index + 4);
+    const results = await Promise.allSettled(batch.map(person => sendSmtpEmail(person.notificationEmail, notice.subject, makeBody(person))));
+    results.forEach((result, offset) => {
+      if (result.status === 'fulfilled') delivered.push(batch[offset].notificationEmail);
+      else console.error('Email notification delivery failed:', result.reason?.message || 'Unknown SMTP error.');
+    });
+  }
+  return delivered;
 }
 
 function publicUser(user) {
@@ -396,6 +419,98 @@ function canManageActivity(user, activity, scope = activityScope(user)) {
   if (isSeniorUser(user)) return true;
   if (isHeadUser(user)) return Boolean(user.department) && activity.assigneeIds.some(id => scope.visibleIds.has(id));
   return activity.lineManagerId === user.id;
+}
+function activeRecipients(ids) {
+  const recipientIds = new Set((ids || []).filter(Boolean));
+  return db.users.filter(person => recipientIds.has(person.id) && person.active !== false);
+}
+function supervisoryRecipientsForUsers(userIds) {
+  const people = db.users.filter(person => userIds.includes(person.id));
+  const departmentsInScope = new Set(people.map(person => person.department).filter(Boolean));
+  const recipientIds = new Set(people.map(person => person.lineManagerId).filter(Boolean));
+  for (const person of db.users) {
+    if ((isSeniorUser(person) && departmentsInScope.has(person.department)) || (isHeadUser(person) && departmentsInScope.has(person.department))) recipientIds.add(person.id);
+  }
+  return activeRecipients([...recipientIds]);
+}
+function activityNotificationRecipients(activity, affectedUserIds = activity.assigneeIds || [], includeAffectedUsers = true) {
+  const ids = new Set([activity.lineManagerId, ...affectedUserIds]);
+  for (const person of db.users) if (affectedUserIds.includes(person.id) && person.lineManagerId) ids.add(person.lineManagerId);
+  for (const update of activity.updates || []) {
+    const author = db.users.find(person => person.id === update.authorId);
+    if (author && isSeniorUser(author)) ids.add(author.id);
+  }
+  for (const supervisor of supervisoryRecipientsForUsers(affectedUserIds)) ids.add(supervisor.id);
+  if (!includeAffectedUsers) for (const id of affectedUserIds) ids.delete(id);
+  return activeRecipients([...ids]);
+}
+function reportNotificationRecipients(report) {
+  const owner = db.users.find(person => person.id === report.userId);
+  const ids = [report.userId, report.lineManagerId, owner?.lineManagerId];
+  const department = reportDepartment(report);
+  for (const person of db.users) {
+    if ((isSeniorUser(person) && department && person.department === department) || (isHeadUser(person) && department && person.department === department)) ids.push(person.id);
+  }
+  for (const feedback of report.feedback || []) {
+    const author = db.users.find(person => person.id === feedback.authorId);
+    if (author && isSeniorUser(author)) ids.push(author.id);
+    for (const reply of feedback.replies || []) {
+      const replyAuthor = db.users.find(person => person.id === reply.authorId);
+      if (replyAuthor && isSeniorUser(replyAuthor)) ids.push(replyAuthor.id);
+    }
+  }
+  for (const message of report.privateMessages || []) {
+    for (const participantId of [message.authorId, message.recipientId]) {
+      const participant = db.users.find(person => person.id === participantId);
+      if (participant && isSeniorUser(participant)) ids.push(participant.id);
+    }
+  }
+  return activeRecipients(ids);
+}
+function communityThreadParticipants(post, comment = null) {
+  const ids = new Set([post.authorId]);
+  if (comment) {
+    ids.add(comment.authorId);
+    for (const reply of comment.replies || []) ids.add(reply.authorId);
+  } else {
+    for (const item of post.comments || []) {
+      ids.add(item.authorId);
+      for (const reply of item.replies || []) ids.add(reply.authorId);
+    }
+  }
+  return activeRecipients([...ids]);
+}
+function lusakaDate(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Lusaka', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+async function sendDeadlineReminders(now = new Date()) {
+  const today = lusakaDate(now);
+  const [year, month, day] = today.split('-').map(Number);
+  const tomorrow = new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
+  let updated = false; let deliveredCount = 0;
+  for (const activity of db.activities) {
+    if (![today, tomorrow].includes(activity.deadline)) continue;
+    const pendingUsers = db.users.filter(person => activity.assigneeIds.includes(person.id) && person.active !== false && canonicalActivityStatus(activity.statusByUser?.[person.id]) !== 'Implemented');
+    if (!pendingUsers.length) continue;
+    const reminderKey = `${activity.deadline}:${today}`;
+    const sentEmails = new Set(activity.deadlineReminderDeliveries?.[reminderKey] || []);
+    const recipients = activityNotificationRecipients(activity, pendingUsers.map(person => person.id)).filter(person => !sentEmails.has(String(person.email || '').toLowerCase()));
+    if (!recipients.length) continue;
+    const delivered = await queueEmailNotifications(recipients, {
+      type: activity.deadline === today ? 'Activity deadline is today' : 'Activity deadline is tomorrow',
+      subject: (activity.deadline === today ? 'Due today: ' : 'Due tomorrow: ') + activity.title,
+      description: `Activity: ${activity.title}\nDeadline: ${activity.deadline}\nPlease review the activity and update its status.`,
+      actor: 'CAMFED Weekly Activity Portal', dashboard: 'assigned'
+    });
+    if (delivered.length) {
+      activity.deadlineReminderDeliveries = { ...(activity.deadlineReminderDeliveries || {}), [reminderKey]: [...new Set([...sentEmails, ...delivered])] };
+      deliveredCount += delivered.length; updated = true;
+    }
+  }
+  if (updated) await persist();
+  return { date: today, delivered: deliveredCount };
 }
 function normalizeCommunityReactions(reactions = {}) {
   const normalized = { ...(reactions || {}) };
@@ -430,6 +545,12 @@ async function bootstrapAdmin() {
 async function handleRequest(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    if (url.pathname === '/api/cron/deadline-reminders') {
+      const secret = String(process.env.CRON_SECRET || '');
+      if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed.' });
+      if (!secret || req.headers.authorization !== `Bearer ${secret}`) return send(res, 401, { error: 'Unauthorized.' });
+      return send(res, 200, await sendDeadlineReminders());
+    }
     if (req.method === 'GET' && url.pathname === '/api/session') {
       const user = currentUser(req); return send(res, 200, { user: user ? publicUser(user) : null });
     }
@@ -506,7 +627,6 @@ async function handleRequest(req, res) {
       }
       const post = { id: crypto.randomUUID(), authorId: user.id, type: body.type, title, text, attachments: safeAttachments, reactions: {}, comments: [], createdAt: new Date().toISOString() };
       db.communityPosts.push(post); await persist();
-      queueEmailNotifications(db.users.filter(person => person.id !== user.id), { type: 'Community Engagement', subject: 'Community Engagement: ' + title.slice(0, 120), description: body.type + ': ' + text.slice(0, 600), actor: user.fullName, dashboard: 'community' });
       return send(res, 201, { ok: true, post: { ...post, authorName: user.fullName } });
     }
     const communityPostMatch = url.pathname.match(/^\/api\/community\/posts\/([\w-]+)$/);
@@ -559,8 +679,11 @@ async function handleRequest(req, res) {
       const body = await readBody(req); const text = String(body.text || '').trim();
       if (!text || text.length > 3000) return send(res, 400, { error: 'Enter a comment of 1 to 3,000 characters.' });
       if (!Array.isArray(post.comments)) post.comments = [];
-      post.comments.push({ id: crypto.randomUUID(), authorId: user.id, text, createdAt: new Date().toISOString() });
-      await persist(); return send(res, 201, { ok: true });
+      const comment = { id: crypto.randomUUID(), authorId: user.id, text, createdAt: new Date().toISOString() };
+      post.comments.push(comment);
+      await persist();
+      await queueEmailNotifications(communityThreadParticipants(post), { type: 'Staff Engagement comment', subject: 'New comment on: ' + String(post.title || '').slice(0, 120), description: text.slice(0, 600), actor: user.fullName, actorId: user.id, dashboard: 'community' });
+      return send(res, 201, { ok: true });
     }
     const communityCommentReplyMatch = url.pathname.match(/^\/api\/community\/posts\/([\w-]+)\/comments\/([\w-]+)\/replies$/);
     if (communityCommentReplyMatch && req.method === 'POST') {
@@ -571,7 +694,9 @@ async function handleRequest(req, res) {
       if (!text || text.length > 3000) return send(res, 400, { error: 'Enter a reply of 1 to 3,000 characters.' });
       if (!Array.isArray(comment.replies)) comment.replies = [];
       comment.replies.push({ id: crypto.randomUUID(), authorId: user.id, text, createdAt: new Date().toISOString() });
-      await persist(); return send(res, 201, { ok: true });
+      await persist();
+      await queueEmailNotifications(communityThreadParticipants(post, comment), { type: 'Staff Engagement reply', subject: 'New reply on: ' + String(post.title || '').slice(0, 120), description: text.slice(0, 600), actor: user.fullName, actorId: user.id, dashboard: 'community' });
+      return send(res, 201, { ok: true });
     }
     if (url.pathname === '/api/my/profile-picture') {
       if (req.method === 'GET') return send(res, 200, { picture: user.profilePicture || await readAssetDataUri(user.profilePictureAssetId) || null });
@@ -708,7 +833,9 @@ async function handleRequest(req, res) {
         return !holidayDates.has(date.toISOString().slice(0, 10)) && (!entry.activity || reportFields.some(field => entry[field].length > 10000));
       })) return send(res, 400, { error: 'Enter an activity for each working day. Each table entry must be 10,000 characters or fewer.' });
       report.id = crypto.randomUUID(); report.userId = user.id; report.lineManagerId = lineManager.id; report.submittedAt = new Date().toISOString(); report.staff = { weekCommencing, fullName: user.fullName, department: user.department, designation: user.designation }; report.activities = activities; report.feedback = [];
-      db.reports.push(report); await persist(); return send(res, 201, { ok: true, id: report.id });
+      db.reports.push(report); await persist();
+      await queueEmailNotifications(reportNotificationRecipients(report), { type: 'Weekly report submitted', subject: 'Weekly report submitted: ' + user.fullName, description: `A weekly report for ${weekCommencing} has been submitted.`, actor: user.fullName, actorId: user.id, dashboard: 'manager-reports' });
+      return send(res, 201, { ok: true, id: report.id });
     }
     if (req.method === 'GET' && url.pathname === '/api/my/reports') {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
@@ -717,7 +844,7 @@ async function handleRequest(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/api/my/activities') {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
-      const activities = db.activities.filter(item => item.assigneeIds.includes(user.id)).map(item => ({ id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), status: item.statusByUser?.[user.id] || 'Not Started', updates: item.updates.filter(update => update.authorId === user.id || update.recipientId === user.id).map(publicActivityUpdate) }));
+      const activities = db.activities.filter(item => item.assigneeIds.includes(user.id)).map(item => ({ id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), status: canonicalActivityStatus(item.statusByUser?.[user.id]), history: activityHistory(item).filter(entry => !entry.assigneeId || entry.assigneeId === user.id), updates: item.updates.filter(update => update.authorId === user.id || update.recipientId === user.id).map(publicActivityUpdate) }));
       return send(res, 200, { activities });
     }
     const activityAttachmentMatch = url.pathname.match(/^\/api\/activities\/([\w-]+)\/attachments\/([\w-]+)$/);
@@ -735,20 +862,25 @@ async function handleRequest(req, res) {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
       const activity = db.activities.find(item => item.id === activityUpdateMatch[1] && item.assigneeIds.includes(user.id));
       if (!activity) return send(res, 404, { error: 'Assigned activity not found.' });
-      const body = await readBody(req, 70 * 1024 * 1024); const text = String(body.text || '').trim(); const requestedStatus = String(body.status || 'In Progress');
-      const status = text.toLowerCase() === 'implemented' ? 'Completed' : requestedStatus;
-      if (!text || text.length > 5000 || !['Not Started', 'In Progress', 'Completed', 'On Hold'].includes(status)) return send(res, 400, { error: 'Enter an update (up to 5,000 characters) and choose a valid status.' });
+      const body = await readBody(req, 70 * 1024 * 1024); const text = String(body.text || '').trim(); const requestedStatus = String(body.status || 'Started');
+      const status = requestedStatus;
+      if (text.length > 5000 || !['Started', 'In Progress', 'Implemented', 'On Hold'].includes(status)) return send(res, 400, { error: 'Choose a valid status and keep the update to 5,000 characters or fewer.' });
       let attachments; try { attachments = await activityAttachments(body.attachments || []); } catch (error) { return send(res, 400, { error: error.message }); }
-      activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: user.id, text, status, attachments, createdAt: new Date().toISOString() });
+      const updateText = text || `Status changed to ${status}.`;
+      const previousStatus = canonicalActivityStatus(activity.statusByUser?.[user.id]);
+      activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: user.id, text: updateText, status, attachments, createdAt: new Date().toISOString() });
       activity.statusByUser = { ...(activity.statusByUser || {}), [user.id]: status };
-      await persist(); return send(res, 201, { ok: true });
+      recordActivityHistory(activity, { type: 'status_changed', actorId: user.id, actorName: user.fullName, assigneeId: user.id, previousStatus, status, details: updateText });
+      await persist();
+      await queueEmailNotifications(activityNotificationRecipients(activity, activity.assigneeIds), { type: 'Activity status update', subject: 'Activity update: ' + activity.title, description: `${updateText}\nStatus: ${status}\nDeadline: ${activity.deadline}`, actor: user.fullName, actorId: user.id, dashboard: 'manager-activities' });
+      return send(res, 201, { ok: true });
     }
     if (req.method === 'GET' && url.pathname === '/api/manager/activities') {
       if (!canOverseeActivities(user)) return send(res, 403, { error: 'Activity oversight access required.' });
       const scope = activityScope(user);
       const activities = db.activities.filter(item => isSeniorUser(user) || (isHeadUser(user) ? canManageActivity(user, item, scope) : item.lineManagerId === user.id)).map(item => {
         const assigneeIds = item.assigneeIds.filter(id => scope.visibleIds.has(id));
-        return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, updatedAt: item.updatedAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), assigneeIds, assignees: assigneeIds.map(id => { const target = scope.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), statusByUser: Object.fromEntries(Object.entries(item.statusByUser || {}).filter(([id]) => scope.visibleIds.has(id))), updates: item.updates.filter(update => scope.visibleIds.has(update.authorId) || (update.recipientId && scope.visibleIds.has(update.recipientId))).map(publicActivityUpdate) };
+        return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, updatedAt: item.updatedAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), assigneeIds, assignees: assigneeIds.map(id => { const target = scope.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), statusByUser: Object.fromEntries(Object.entries(item.statusByUser || {}).filter(([id]) => scope.visibleIds.has(id)).map(([id, status]) => [id, canonicalActivityStatus(status)])), history: activityHistory(item).filter(entry => !entry.assigneeId || scope.visibleIds.has(entry.assigneeId)), updates: item.updates.filter(update => scope.visibleIds.has(update.authorId) || (update.recipientId && scope.visibleIds.has(update.recipientId))).map(publicActivityUpdate) };
       });
       return send(res, 200, { assignedUsers: scope.users.filter(item => item.active !== false).map(item => ({ id: item.id, fullName: item.fullName, email: item.email })), activities });
     }
@@ -774,12 +906,50 @@ async function handleRequest(req, res) {
       const attachmentChanged = JSON.stringify(attachments.map(({ id }) => id)) !== JSON.stringify((activity.attachments || []).map(({ id }) => id));
       const changed = title !== previousTitle || description !== previousDescription || deadline !== previousDeadline || assignmentChanged || attachmentChanged;
       if (!changed) return send(res, 200, { activity, changed: false });
+      if (deadline !== previousDeadline) recordActivityHistory(activity, { type: 'deadline_adjusted', actorId: user.id, actorName: user.fullName, previousDeadline, deadline, details: 'Activity deadline adjusted.' });
+      if (assignmentChanged) {
+        const names = ids => ids.map(id => db.users.find(person => person.id === id)?.fullName || 'Unknown user').join(', ');
+        recordActivityHistory(activity, { type: 'assignment_changed', actorId: user.id, actorName: user.fullName, details: `Assignees changed from ${names(previousAssigneeIds)} to ${names(assigneeIds)}.` });
+      }
       activity.title = title; activity.description = description; activity.deadline = deadline; activity.assigneeIds = assigneeIds; activity.attachments = attachments; activity.updatedAt = new Date().toISOString();
       await persist();
       const affectedIds = new Set([...previousAssigneeIds, ...assigneeIds]);
       const recipients = db.users.filter(person => affectedIds.has(person.id) && person.active !== false);
-      queueEmailNotifications(recipients, { type: 'Deadline Activity Changed', subject: 'Activity updated: ' + title, description: person => (assigneeIds.includes(person.id) ? 'You are assigned to this activity.' : 'You are no longer assigned to this activity.') + '\nActivity: ' + title + '\n' + description + '\nPrevious deadline: ' + previousDeadline + '\nNew deadline: ' + deadline, actor: user.fullName, dashboard: 'assigned' });
+      await queueEmailNotifications([...recipients, ...activityNotificationRecipients(activity, [...previousAssigneeIds, ...assigneeIds])], { type: 'Deadline Activity Changed', subject: 'Activity updated: ' + title, description: person => (previousAssigneeIds.includes(person.id) || assigneeIds.includes(person.id) ? (assigneeIds.includes(person.id) ? 'You are assigned to this activity.' : 'You were removed from this activity.') : 'This activity within your supervisory scope has changed.') + '\nActivity: ' + title + '\n' + description + '\nPrevious deadline: ' + previousDeadline + '\nNew deadline: ' + deadline, actor: user.fullName, actorId: user.id, dashboard: 'assigned' });
       return send(res, 200, { activity });
+    }
+    const managerActivityReviewMatch = url.pathname.match(/^\/api\/manager\/activities\/([\w-]+)\/assignees\/([\w-]+)\/reviews$/);
+    if (req.method === 'POST' && managerActivityReviewMatch) {
+      if (!canOverseeActivities(user)) return send(res, 403, { error: 'Activity oversight access required.' });
+      const scope = activityScope(user);
+      const [, activityId, assigneeId] = managerActivityReviewMatch;
+      const activity = db.activities.find(item => item.id === activityId && canManageActivity(user, item, scope) && item.assigneeIds.includes(assigneeId));
+      if (!activity || !scope.visibleIds.has(assigneeId)) return send(res, 404, { error: 'Assigned activity participant not found.' });
+      const body = await readBody(req);
+      const decision = String(body.decision || ''); const feedback = String(body.feedback || '').trim();
+      const latestUpdate = [...(activity.updates || [])].filter(update => update.authorId === assigneeId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      if (!latestUpdate || latestUpdate.id !== String(body.updateId || '')) return send(res, 409, { error: 'A newer progress update is available. Refresh and review the latest update.' });
+      if (!['Approved', 'Rejected', 'Reassign'].includes(decision) || feedback.length > 5000 || (decision === 'Rejected' && !feedback)) return send(res, 400, { error: 'Choose a review decision. Rejection requires feedback of up to 5,000 characters.' });
+      let revisedDeadline = '';
+      if (decision === 'Reassign' && body.deadline && body.deadline !== activity.deadline) {
+        revisedDeadline = String(body.deadline);
+        const valid = /^\d{4}-\d{2}-\d{2}$/.test(revisedDeadline) && !Number.isNaN(Date.parse(`${revisedDeadline}T00:00:00Z`)) && new Date(`${revisedDeadline}T00:00:00Z`).toISOString().slice(0, 10) === revisedDeadline;
+        if (!valid) return send(res, 400, { error: 'Choose a valid revised deadline.' });
+      }
+      const review = { decision, feedback, reviewedById: user.id, reviewedByName: user.fullName, reviewedAt: new Date().toISOString(), ...(revisedDeadline ? { deadline: revisedDeadline } : {}) };
+      latestUpdate.review = review;
+      const previousStatus = canonicalActivityStatus(activity.statusByUser?.[assigneeId]);
+      const previousDeadline = activity.deadline;
+      const nextStatus = decision === 'Reassign' ? 'Started' : decision === 'Rejected' ? 'In Progress' : previousStatus;
+      if (decision === 'Reassign' && revisedDeadline) activity.deadline = revisedDeadline;
+      if (decision !== 'Approved') activity.statusByUser = { ...(activity.statusByUser || {}), [assigneeId]: nextStatus };
+      if (revisedDeadline) recordActivityHistory(activity, { type: 'deadline_adjusted', actorId: user.id, actorName: user.fullName, assigneeId, previousDeadline, deadline: revisedDeadline, details: 'Deadline adjusted during reassignment.' });
+      recordActivityHistory(activity, { type: decision.toLowerCase(), actorId: user.id, actorName: user.fullName, assigneeId, previousStatus, status: nextStatus, previousDeadline, deadline: activity.deadline, details: feedback });
+      activity.updatedAt = new Date().toISOString();
+      await persist();
+      const description = [`Decision: ${decision}`, feedback ? `Feedback: ${feedback}` : '', `Activity: ${activity.title}`, `Deadline: ${activity.deadline}`].filter(Boolean).join('\n');
+      await queueEmailNotifications(activityNotificationRecipients(activity, [assigneeId]), { type: `Activity ${decision}`, subject: `${decision}: ${activity.title}`, description, actor: user.fullName, actorId: user.id, dashboard: 'assigned' });
+      return send(res, 200, { ok: true, review, deadline: activity.deadline });
     }
     const managerActivityReplyMatch = url.pathname.match(/^\/api\/manager\/activities\/([\w-]+)\/assignees\/([\w-]+)\/replies$/);
     if (req.method === 'POST' && managerActivityReplyMatch) {
@@ -792,8 +962,8 @@ async function handleRequest(req, res) {
       const body = await readBody(req, 70 * 1024 * 1024); const text = String(body.text || '').trim();
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter a reply of 1 to 5,000 characters.' });
       let attachments; try { attachments = await activityAttachments(body.attachments || []); } catch (error) { return send(res, 400, { error: error.message }); }
-      activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: assigneeId, text, status: activity.statusByUser?.[assigneeId] || 'Not Started', attachments, createdAt: new Date().toISOString() });
-      await persist(); queueEmailNotifications([assignee], { type: 'Deadline Activity Update', subject: 'Activity update: ' + activity.title, description: text + '\nDeadline: ' + activity.deadline, actor: user.fullName, dashboard: 'assigned' }); return send(res, 201, { ok: true });
+      activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: assigneeId, text, status: canonicalActivityStatus(activity.statusByUser?.[assigneeId]), attachments, createdAt: new Date().toISOString() });
+      await persist(); await queueEmailNotifications([...activityNotificationRecipients(activity, [assigneeId]), assignee], { type: 'Deadline Activity Update', subject: 'Activity update: ' + activity.title, description: text + '\nDeadline: ' + activity.deadline, actor: user.fullName, actorId: user.id, dashboard: 'assigned' }); return send(res, 201, { ok: true });
     }
     if (req.method === 'POST' && url.pathname === '/api/manager/activities') {
       if (!canOverseeActivities(user)) return send(res, 403, { error: 'Activity oversight access required.' });
@@ -805,9 +975,10 @@ async function handleRequest(req, res) {
       let attachments;
       try { attachments = await activityAttachments(body.attachments || []); }
       catch (error) { return send(res, 400, { error: error.message }); }
-      const activity = { id: crypto.randomUUID(), lineManagerId: user.id, title, description, deadline, assigneeIds, attachments, statusByUser: {}, updates: [], createdAt: new Date().toISOString() };
+      const createdAt = new Date().toISOString();
+      const activity = { id: crypto.randomUUID(), lineManagerId: user.id, title, description, deadline, assigneeIds, attachments, statusByUser: {}, updates: [], createdAt, history: [{ id: crypto.randomUUID(), type: 'created', at: createdAt, actorId: user.id, actorName: user.fullName, details: 'Activity created and assigned to ' + assigneeIds.map(id => db.users.find(person => person.id === id)?.fullName || 'Unknown user').join(', ') + '.', deadline }] };
       db.activities.push(activity); await persist();
-      queueEmailNotifications(db.users.filter(person => assigneeIds.includes(person.id)), { type: 'Deadline Activity Assigned', subject: 'New activity: ' + title, description: description + '\nDeadline: ' + deadline, actor: user.fullName, dashboard: 'assigned' });
+      await queueEmailNotifications(activityNotificationRecipients(activity), { type: 'Deadline Activity Assigned', subject: 'New activity: ' + title, description: description + '\nDeadline: ' + deadline, actor: user.fullName, actorId: user.id, dashboard: 'assigned' });
       return send(res, 201, { activity });
     }
     if (req.method === 'GET' && url.pathname === '/api/manager/reports') {
@@ -849,7 +1020,7 @@ async function handleRequest(req, res) {
       if (!Array.isArray(report.privateMessages)) report.privateMessages = [];
       const message = { id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: recipient.id, text, createdAt: new Date().toISOString() };
       report.privateMessages.push(message); await persist();
-      queueEmailNotifications([recipient], { type: 'Private Report Chat', subject: 'New private report chat message', description: text, actor: user.fullName, dashboard: 'manager-reports' });
+      await queueEmailNotifications([recipient], { type: 'Private Report Chat', subject: 'New private report chat message', description: text, actor: user.fullName, actorId: user.id, dashboard: 'manager-reports' });
       return send(res, 201, { message });
     }
     const feedbackMatch = url.pathname.match(/^\/api\/manager\/reports\/([\w-]+)\/feedback$/);
@@ -863,7 +1034,10 @@ async function handleRequest(req, res) {
       const sentAt = body.sendImmediately ? new Date().toISOString() : null;
       const feedback = { id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, text, createdAt: new Date().toISOString(), sentAt, replies: [] };
       report.feedback.push(feedback); await persist();
-      if (sentAt) { const recipient = db.users.find(item => item.id === report.userId && item.active !== false); queueEmailNotifications(recipient ? [recipient] : [], { type: 'Private Report Reply', subject: 'Private reply on your weekly report', description: text, actor: user.fullName, dashboard: 'reports' }); }
+      if (sentAt) {
+        const recipient = db.users.find(item => item.id === report.userId && item.active !== false);
+        await queueEmailNotifications(recipient ? [recipient] : [], { type: 'Private Report Reply', subject: 'Private reply on your weekly report', description: text, actor: user.fullName, actorId: user.id, dashboard: 'reports' });
+      }
       return send(res, 201, { feedback });
     }
     const sendFeedbackMatch = url.pathname.match(/^\/api\/manager\/reports\/([\w-]+)\/feedback\/([\w-]+)\/send$/);
@@ -875,7 +1049,7 @@ async function handleRequest(req, res) {
       const newlySent = !feedback.sentAt;
       if (newlySent) feedback.sentAt = new Date().toISOString();
       await persist();
-      if (newlySent) { const recipient = db.users.find(item => item.id === report.userId && item.active !== false); queueEmailNotifications(recipient ? [recipient] : [], { type: 'Line Manager Feedback', subject: 'Feedback on your weekly report', description: feedback.text, actor: user.fullName, dashboard: 'reports' }); }
+      if (newlySent) await queueEmailNotifications(reportNotificationRecipients(report), { type: 'Line Manager Feedback', subject: 'Feedback on your weekly report', description: feedback.text, actor: user.fullName, actorId: user.id, dashboard: 'reports' });
       return send(res, 200, { ok: true });
     }
     const replyMatch = url.pathname.match(/^\/api\/my\/reports\/([\w-]+)\/feedback\/([\w-]+)\/replies$/);
@@ -887,7 +1061,9 @@ async function handleRequest(req, res) {
       const body = await readBody(req); const text = String(body.reply || '').trim();
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter a reply of 1 to 5,000 characters.' });
       feedback.replies.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, text, createdAt: new Date().toISOString() });
-      await persist(); return send(res, 201, { ok: true });
+      await persist();
+      await queueEmailNotifications(reportNotificationRecipients(report), { type: 'Reply to Line Manager feedback', subject: 'New reply on weekly report: ' + report.staff.fullName, description: text, actor: user.fullName, actorId: user.id, dashboard: 'manager-reports' });
+      return send(res, 201, { ok: true });
     }
     if (req.method === 'GET' && !url.pathname.startsWith('/api/')) {
       const relative = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname.slice(1));

@@ -562,7 +562,7 @@ function lusakaToday() {
   const values = Object.fromEntries(parts.map(part => [part.type, part.value])); return `${values.year}-${values.month}-${values.day}`;
 }
 function deadlineState(deadline, completed = false) {
-  if (completed) return "Completed";
+  if (completed) return "Implemented";
   const today = lusakaToday();
   if (deadline < today) return "Overdue";
   const daysLeft = (Date.parse(`${deadline}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000;
@@ -585,10 +585,18 @@ function deadlineIndicatorColor(deadline, completed = false) {
   return `rgb(${color.join(", ")})`;
 }
 function activityUpdatesMarkup(updates, activityId) {
-  return updates?.length ? newestFirst(updates).map(update => `<p class="activity-update"><strong>${escapeHtml(update.authorName)} · ${escapeHtml(update.status)}</strong><small>${escapeHtml(new Date(update.createdAt).toLocaleString())}</small><br>${escapeHtml(update.text)}${update.attachments?.length ? `<span class="community-attachments">${update.attachments.map(item => `<a class="community-attachment" href="/api/activities/${encodeURIComponent(activityId)}/attachments/${encodeURIComponent(item.id)}">${escapeHtml(item.name)}</a>`).join("")}</span>` : ""}</p>`).join("") : '<p class="empty-reports">No progress updates yet.</p>';
+  return updates?.length ? newestFirst(updates).map(update => `<p class="activity-update"><strong>${escapeHtml(update.authorName)} · ${escapeHtml(normalizeActivityStatus(update.status))}</strong><small>${escapeHtml(new Date(update.createdAt).toLocaleString())}</small><br>${escapeHtml(update.text)}${update.review ? `<br><strong>Line Manager ${escapeHtml(update.review.decision)}</strong>${update.review.feedback ? ` · ${escapeHtml(update.review.feedback)}` : ""}${update.review.deadline ? `<br>Revised deadline: ${escapeHtml(update.review.deadline)}` : ""}` : ""}${update.attachments?.length ? `<span class="community-attachments">${update.attachments.map(item => `<a class="community-attachment" href="/api/activities/${encodeURIComponent(activityId)}/attachments/${encodeURIComponent(item.id)}">${escapeHtml(item.name)}</a>`).join("")}</span>` : ""}</p>`).join("") : '<p class="empty-reports">No progress updates yet.</p>';
+}
+function normalizeActivityStatus(status) {
+  return ({ "Not Started": "Started", Completed: "Implemented" })[status] || status || "Started";
 }
 function activityAttachmentsMarkup(activity) {
   return activity.attachments?.length ? `<div class="community-attachments">${activity.attachments.map(item => `<a class="community-attachment" href="/api/activities/${encodeURIComponent(activity.id)}/attachments/${encodeURIComponent(item.id)}">${escapeHtml(item.name)}</a>`).join("")}</div>` : "";
+}
+function activityReviewMarkup(activity, assignee, updates) {
+  const latestUpdate = newestFirst(updates).find(update => update.authorId === assignee.id);
+  if (!latestUpdate) return '<p class="empty-comments">Review options appear after the user submits a progress update.</p>';
+  return `<form class="activity-review-form" data-activity-review="${escapeHtml(activity.id)}" data-review-user="${escapeHtml(assignee.id)}" data-review-update="${escapeHtml(latestUpdate.id)}"><h5>Review latest update</h5><label>Decision<select name="decision" required><option value="">Choose a review action</option><option value="Approved">Approved</option><option value="Rejected">Rejected</option><option value="Reassign">Reassign to user</option></select></label><label>Feedback or reason<textarea name="feedback" maxlength="5000" placeholder="Required when rejecting; optional for other decisions..."></textarea></label><label>Revised deadline <span class="field-hint">Optional; used when reassigning</span><input name="deadline" type="date" value="${escapeHtml(activity.deadline)}"></label><button type="submit" class="btn btn-secondary">Submit review</button></form>`;
 }
 function collapseActivityCards(container) {
   container.querySelectorAll(":scope > .activity-card").forEach(card => {
@@ -622,15 +630,131 @@ function handleManagerActivitiesLoadError(prefix, messageNode, error) {
 function readActivityFiles(files) {
   return Promise.all([...files].map(file => new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve({ name: file.name, data: reader.result }); reader.onerror = () => reject(new Error(`Could not read ${file.name}.`)); reader.readAsDataURL(file); })));
 }
+function activityTimelineProgress(activity) {
+  const startDateParts = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Lusaka", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(activity.createdAt));
+  const startDate = Object.fromEntries(startDateParts.map(part => [part.type, part.value]));
+  const start = Date.parse(`${startDate.year}-${startDate.month}-${startDate.day}T00:00:00Z`);
+  const end = Date.parse(`${activity.deadline}T00:00:00Z`);
+  const today = Date.parse(`${lusakaToday()}T00:00:00Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
+  return end <= start ? (today >= end ? 100 : 0) : Math.max(0, Math.min(100, Math.round((today - start) / (end - start) * 100)));
+}
+function implementationProgress(status) {
+  status = normalizeActivityStatus(status);
+  if (typeof status === "number") return Math.max(0, Math.min(100, Math.round(status)));
+  return ({ Started: 0, "On Hold": 50, "In Progress": 50, Implemented: 100 })[status] ?? 0;
+}
+function timelineProgressBand(percent) {
+  if (percent >= 75) return "progress-dark-red";
+  if (percent >= 50) return "progress-light-red";
+  if (percent >= 25) return "progress-dark-orange";
+  return "progress-light-orange";
+}
+function activityProgressMarkup(activity, status, label = "Implementation progress") {
+  const timeline = activityTimelineProgress(activity);
+  const implementation = implementationProgress(status);
+  const implementationLabel = typeof status === "number" ? `${implementation}% complete` : `${implementation}% · ${escapeHtml(status)}`;
+  return `<div class="activity-progress" aria-label="Activity progress"><label>Timeline <progress class="timeline-progress ${timelineProgressBand(timeline)}" max="100" value="${timeline}" aria-label="Timeline elapsed"></progress><span>${timeline}% elapsed</span></label><label>${escapeHtml(label)} <progress class="implementation-progress" max="100" value="${implementation}" aria-label="${escapeHtml(label)}"></progress><span>${implementationLabel}</span></label></div>`;
+}
+async function downloadActivityHistoryReport(activity) {
+  const pageWidth = 595; const pageHeight = 842; const scale = 2; const margin = 42; const bottom = pageHeight - 42;
+  const encoder = new TextEncoder(); const pages = []; let canvas; let ctx; let y;
+  const logo = new Image(); logo.src = "/Camfed(1).png"; try { await logo.decode(); } catch {}
+  const people = new Map((activity.assignees || []).map(person => [person.id, person.fullName]));
+  function newPage(first = false) {
+    canvas = document.createElement("canvas"); canvas.width = pageWidth * scale; canvas.height = pageHeight * scale; pages.push(canvas);
+    ctx = canvas.getContext("2d"); ctx.scale(scale, scale); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, pageWidth, pageHeight);
+    if (logo.naturalWidth) { const width = first ? 122 : 82; ctx.drawImage(logo, margin, 22, width, width * logo.height / logo.width); }
+    ctx.fillStyle = "#16834a"; ctx.fillRect(margin, 77, pageWidth - margin * 2, 3);
+    ctx.fillStyle = "#512469"; ctx.font = "bold 17px Arial"; ctx.fillText(first ? "DEADLINE ACTIVITY REPORT" : "ACTIVITY HISTORY · CONTINUED", margin, 94);
+    y = first ? 119 : 112;
+  }
+  function wrap(value, font, maxWidth) {
+    ctx.font = font; const lines = [];
+    for (const paragraph of String(value || "—").split("\n")) {
+      let line = "";
+      for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+        const next = line ? `${line} ${word}` : word;
+        if (ctx.measureText(next).width > maxWidth && line) { lines.push(line); line = word; } else line = next;
+      }
+      if (line) lines.push(line); else lines.push("");
+    }
+    return lines;
+  }
+  function ensureSpace(height) { if (y + height > bottom) newPage(false); }
+  function heading(text) { ensureSpace(30); ctx.fillStyle = "#f2eaf5"; ctx.fillRect(margin, y, pageWidth - margin * 2, 23); ctx.fillStyle = "#512469"; ctx.font = "bold 10px Arial"; ctx.fillText(text, margin + 8, y + 6); y += 31; }
+  function paragraph(label, value) {
+    const text = `${label}: ${value || "—"}`; const lines = wrap(text, "9px Arial", pageWidth - margin * 2 - 4); ensureSpace(lines.length * 13 + 3);
+    ctx.fillStyle = "#26352b"; ctx.font = "9px Arial"; for (const line of lines) { ctx.fillText(line, margin + 3, y); y += 13; }
+  }
+  function block(title, body) {
+    const lines = wrap(body, "9px Arial", pageWidth - margin * 2 - 18); ensureSpace(28);
+    ctx.fillStyle = "#234f36"; ctx.font = "bold 9px Arial"; ctx.fillText(title, margin + 2, y); y += 14;
+    ctx.fillStyle = "#26352b"; ctx.font = "9px Arial";
+    for (const line of lines) { if (y + 13 > bottom) { newPage(false); ctx.fillStyle = "#26352b"; ctx.font = "9px Arial"; } ctx.fillText(line, margin + 10, y); y += 13; }
+    y += 7;
+  }
+  newPage(true);
+  paragraph("Activity", activity.title); paragraph("Created", new Date(activity.createdAt).toLocaleString()); paragraph("Deadline", activity.deadline);
+  paragraph("Timeline progress", `${activityTimelineProgress(activity)}% elapsed`);
+  if (activity.assignees?.length) for (const person of activity.assignees) paragraph(`Status · ${person.fullName}`, activity.statusByUser?.[person.id] || "Started");
+  else paragraph("Current status", activity.status || "Started");
+  heading("ACTIVITY DETAILS"); block("Instructions", activity.description);
+  if (activity.attachments?.length) block("Activity documents", activity.attachments.map(item => item.name).join(", "));
+  heading("PROGRESS UPDATES AND MANAGER REVIEWS");
+  for (const update of [...(activity.updates || [])].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))) {
+    block(`${update.authorName || "User"} · ${normalizeActivityStatus(update.status)} · ${new Date(update.createdAt).toLocaleString()}`, update.text);
+    if (update.review) block(`Line Manager decision · ${update.review.decision} · ${new Date(update.review.reviewedAt).toLocaleString()}`, [update.review.reviewedByName, update.review.feedback, update.review.deadline ? `Revised deadline: ${update.review.deadline}` : ""].filter(Boolean).join("\n"));
+    if (update.attachments?.length) block("Attached documents", update.attachments.map(item => item.name).join(", "));
+  }
+  heading("AUDIT HISTORY");
+  const eventNames = { created: "Activity created", status_changed: "Status changed", approved: "Approved", rejected: "Rejected", reassign: "Reassigned", reassigned: "Reassigned", deadline_adjusted: "Deadline adjusted", assignment_changed: "Assignment changed" };
+  const history = [...(activity.history || [])].sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  for (const entry of history) {
+    const assignee = people.get(entry.assigneeId);
+    const summary = [entry.actorName ? `By: ${entry.actorName}` : "", assignee ? `Assignee: ${assignee}` : "", entry.previousStatus || entry.status ? `Status: ${entry.previousStatus || "—"} → ${entry.status || "—"}` : "", entry.previousDeadline || entry.deadline ? `Deadline: ${entry.previousDeadline || "—"} → ${entry.deadline || "—"}` : "", entry.details || ""].filter(Boolean).join("\n");
+    block(`${eventNames[entry.type] || entry.type || "Activity update"} · ${entry.at ? new Date(entry.at).toLocaleString() : ""}`, summary);
+  }
+  for (let index = 0; index < pages.length; index++) {
+    ctx = pages[index].getContext("2d"); ctx.fillStyle = "#66736a"; ctx.font = "8px Arial"; ctx.fillText(`CAMFED · Activity report · Page ${index + 1} of ${pages.length}`, margin, pageHeight - 18);
+  }
+  const objects = 2 + pages.length * 3; const chunks = []; let byteOffset = 0; const offsets = new Array(objects + 1).fill(0);
+  function pushBytes(bytes) { chunks.push(bytes); byteOffset += bytes.length; }
+  function pushText(text) { pushBytes(encoder.encode(text)); }
+  function startObject(id) { offsets[id] = byteOffset; pushText(`${id} 0 obj\n`); }
+  function endObject() { pushText("\nendobj\n"); }
+  pushText("%PDF-1.4\n"); startObject(1); pushText("<< /Type /Catalog /Pages 2 0 R >>"); endObject();
+  const pageIds = pages.map((_, index) => `${3 + index * 3} 0 R`).join(" "); startObject(2); pushText(`<< /Type /Pages /Kids [${pageIds}] /Count ${pages.length} >>`); endObject();
+  for (let index = 0; index < pages.length; index++) {
+    const pageId = 3 + index * 3; const contentId = pageId + 1; const imageId = pageId + 2;
+    startObject(pageId); pushText(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Im0 ${imageId} 0 R >> >> /Contents ${contentId} 0 R >>`); endObject();
+    const content = `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Im0 Do Q`; startObject(contentId); pushText(`<< /Length ${encoder.encode(content).length} >>\nstream\n${content}\nendstream`); endObject();
+    const jpegData = pages[index].toDataURL("image/jpeg", 0.94).split(",")[1]; const jpeg = Uint8Array.from(atob(jpegData), char => char.charCodeAt(0));
+    startObject(imageId); pushText(`<< /Type /XObject /Subtype /Image /Width ${pageWidth * scale} /Height ${pageHeight * scale} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>\nstream\n`); pushBytes(jpeg); pushText("\nendstream"); endObject();
+  }
+  const xrefOffset = byteOffset; pushText(`xref\n0 ${objects + 1}\n0000000000 65535 f \n`); for (let id = 1; id <= objects; id++) pushText(`${String(offsets[id]).padStart(10, "0")} 00000 n \n`);
+  pushText(`trailer\n<< /Size ${objects + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
+  const pdf = new Blob(chunks, { type: "application/pdf" }); const url = URL.createObjectURL(pdf); const link = document.createElement("a");
+  const safeTitle = String(activity.title || "activity").normalize("NFKD").replace(/[^a-z0-9_-]+/gi, "_").replace(/^_+|_+$/g, "") || "activity";
+  link.href = url; link.download = `CAMFED_Activity_Report_${safeTitle}.pdf`; document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function bindActivityHistoryDownloads(container, activities, messageNode) {
+  container.querySelectorAll("[data-download-activity-report]").forEach(button => button.addEventListener("click", () => {
+    const activity = activities.find(item => item.id === button.dataset.downloadActivityReport);
+    if (!activity) return;
+    downloadActivityHistoryReport(activity).then(() => showMessage(messageNode, "Activity PDF report downloaded.", "success")).catch(error => showMessage(messageNode, `Could not create the activity report: ${error.message}`));
+  }));
+}
 async function loadMyActivities() {
   const container = document.getElementById("myActivities");
   try {
     const { activities } = await api("/api/my/activities");
     activities.splice(0, activities.length, ...newestFirst(activities, item => newestFirst(item.updates)[0]?.createdAt || item.updatedAt || item.createdAt));
     container.innerHTML = activities.map(activity => {
-      const state = deadlineState(activity.deadline, activity.status === "Completed");
-      return `<article class="manager-report-card activity-card"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · <span class="deadline-indicator" style="--deadline-indicator-color:${deadlineIndicatorColor(activity.deadline, activity.status === "Completed")}">${escapeHtml(state)}</span></p></div><span class="report-date">Assigned ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header><p class="activity-description">${escapeHtml(activity.description)}</p>${activityAttachmentsMarkup(activity)}<div class="activity-updates">${activityUpdatesMarkup(activity.updates, activity.id)}</div><label>Progress update<textarea data-activity-update="${escapeHtml(activity.id)}" maxlength="5000" placeholder="Share progress or explain a delay..."></textarea></label><label>Attach documents<input data-activity-files="${escapeHtml(activity.id)}" type="file" multiple></label><div class="activity-update-controls"><label>Status<select data-activity-status="${escapeHtml(activity.id)}"><option${activity.status === "Not Started" ? " selected" : ""}>Not Started</option><option${activity.status === "In Progress" ? " selected" : ""}>In Progress</option><option${activity.status === "On Hold" ? " selected" : ""}>On Hold</option><option${activity.status === "Completed" ? " selected" : ""}>Completed</option></select></label><button type="button" class="btn btn-secondary" data-save-activity="${escapeHtml(activity.id)}">Send update</button></div></article>`;
+      const state = deadlineState(activity.deadline, normalizeActivityStatus(activity.status) === "Implemented");
+      return `<article class="manager-report-card activity-card"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · <span class="deadline-indicator" style="--deadline-indicator-color:${deadlineIndicatorColor(activity.deadline, normalizeActivityStatus(activity.status) === "Implemented")}">${escapeHtml(state)}</span></p></div><span class="report-date">Assigned ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header>${activityProgressMarkup(activity, activity.status)}<button type="button" class="btn btn-secondary" data-download-activity-report="${escapeHtml(activity.id)}">Download detailed PDF report</button><p class="activity-description">${escapeHtml(activity.description)}</p>${activityAttachmentsMarkup(activity)}<div class="activity-updates">${activityUpdatesMarkup(activity.updates, activity.id)}</div><label>Progress update<textarea data-activity-update="${escapeHtml(activity.id)}" maxlength="5000" placeholder="Share progress or explain a delay..."></textarea></label><label>Attach documents<input data-activity-files="${escapeHtml(activity.id)}" type="file" multiple></label><div class="activity-update-controls"><label>Status<select data-activity-status="${escapeHtml(activity.id)}"><option${normalizeActivityStatus(activity.status) === "Started" ? " selected" : ""}>Started</option><option${normalizeActivityStatus(activity.status) === "In Progress" ? " selected" : ""}>In Progress</option><option${activity.status === "On Hold" ? " selected" : ""}>On Hold</option><option${normalizeActivityStatus(activity.status) === "Implemented" ? " selected" : ""}>Implemented</option></select></label><button type="button" class="btn btn-secondary" data-save-activity="${escapeHtml(activity.id)}">Send update</button></div></article>`;
     }).join("") || '<p class="empty-reports">No activities have been assigned to you.</p>';
+    bindActivityHistoryDownloads(container, activities, document.getElementById("myActivitiesMessage"));
     collapseActivityCards(container);
     container.querySelectorAll("[data-save-activity]").forEach(button => button.addEventListener("click", async () => {
       const id = button.dataset.saveActivity; const field = container.querySelector(`[data-activity-update="${id}"]`); const status = container.querySelector(`[data-activity-status="${id}"]`).value;
@@ -651,13 +775,25 @@ async function loadManagerActivities(prefix) {
     if (messageNode.dataset.retryNotice) { messageNode.textContent = ""; messageNode.className = "form-message"; delete messageNode.dataset.retryNotice; }
     activities.splice(0, activities.length, ...newestFirst(activities, item => newestFirst(item.updates)[0]?.createdAt || item.updatedAt || item.createdAt));
     usersNode.innerHTML = assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}">${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("") || '<p class="empty-reports">No active users are available in your oversight scope.</p>';
-    list.innerHTML = activities.map(activity => `<article class="manager-report-card activity-card"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · Assigned to ${activity.assignees.map(item => escapeHtml(item.fullName)).join(", ")}</p></div><span class="report-date">Created ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header><details class="activity-edit-details"><summary>Edit activity details</summary><form class="activity-edit-form" data-update-activity="${escapeHtml(activity.id)}"><label>Activity title<input name="title" maxlength="200" value="${escapeHtml(activity.title)}" required></label><label>Instructions<textarea name="description" maxlength="5000" required>${escapeHtml(activity.description)}</textarea></label><label>Deadline<input name="deadline" type="date" value="${escapeHtml(activity.deadline)}" required></label>${activityAttachmentsMarkup(activity)}<label>Replace or add documents <span class="field-hint">Current files stay attached; select additional files</span><input name="attachments" type="file" multiple></label><fieldset><legend>Assigned users</legend><div class="assignee-options">${assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}" ${activity.assigneeIds.includes(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("")}</div></fieldset><input type="hidden" name="previousDeadline" value="${escapeHtml(activity.deadline)}"><button class="btn btn-secondary" type="submit">Save activity changes</button></form></details><p class="activity-description">${escapeHtml(activity.description)}</p>${activityAttachmentsMarkup(activity)}${activity.assignees.map(person => { const updates = activity.updates.filter(update => update.authorId === person.id || update.recipientId === person.id); const status = activity.statusByUser?.[person.id] || "Not Started"; const state = deadlineState(activity.deadline, status === "Completed"); return `<div class="assignee-progress"><h4>${escapeHtml(person.fullName)} · ${escapeHtml(status)} · <span class="deadline-indicator" style="--deadline-indicator-color:${deadlineIndicatorColor(activity.deadline, status === "Completed")}">${escapeHtml(state)}</span></h4>${activityUpdatesMarkup(updates, activity.id)}<div class="activity-reply-controls"><label>Reply to ${escapeHtml(person.fullName)}<textarea data-manager-reply="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" maxlength="5000" placeholder="Write guidance or a reply..."></textarea></label><label>Attach documents<input data-manager-files="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" type="file" multiple></label><button type="button" class="btn btn-secondary" data-send-manager-reply="${escapeHtml(activity.id)}" data-reply-user="${escapeHtml(person.id)}">Send reply</button></div></div>`; }).join("")}</article>`).join("") || '<p class="empty-reports">No activities in your oversight scope yet.</p>';
+    list.innerHTML = activities.map(activity => `<article class="manager-report-card activity-card"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · Assigned to ${activity.assignees.map(item => escapeHtml(item.fullName)).join(", ")}</p></div><span class="report-date">Created ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header>${activityProgressMarkup(activity, activity.assigneeIds.length ? activity.assigneeIds.reduce((sum, id) => sum + implementationProgress(activity.statusByUser?.[id] || "Started"), 0) / activity.assigneeIds.length : 0, "Team implementation progress")}<button type="button" class="btn btn-secondary" data-download-activity-report="${escapeHtml(activity.id)}">Download detailed PDF report</button><details class="activity-edit-details"><summary>Edit activity details</summary><form class="activity-edit-form" data-update-activity="${escapeHtml(activity.id)}"><label>Activity title<input name="title" maxlength="200" value="${escapeHtml(activity.title)}" required></label><label>Instructions<textarea name="description" maxlength="5000" required>${escapeHtml(activity.description)}</textarea></label><label>Deadline<input name="deadline" type="date" value="${escapeHtml(activity.deadline)}" required></label>${activityAttachmentsMarkup(activity)}<label>Replace or add documents <span class="field-hint">Current files stay attached; select additional files</span><input name="attachments" type="file" multiple></label><fieldset><legend>Assigned users</legend><div class="assignee-options">${assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}" ${activity.assigneeIds.includes(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("")}</div></fieldset><input type="hidden" name="previousDeadline" value="${escapeHtml(activity.deadline)}"><button class="btn btn-secondary" type="submit">Save activity changes</button></form></details><p class="activity-description">${escapeHtml(activity.description)}</p>${activityAttachmentsMarkup(activity)}${activity.assignees.map(person => { const updates = activity.updates.filter(update => update.authorId === person.id || update.recipientId === person.id); const status = normalizeActivityStatus(activity.statusByUser?.[person.id]); const state = deadlineState(activity.deadline, normalizeActivityStatus(status) === "Implemented"); return `<div class="assignee-progress"><h4>${escapeHtml(person.fullName)} · ${escapeHtml(status)} · <span class="deadline-indicator" style="--deadline-indicator-color:${deadlineIndicatorColor(activity.deadline, normalizeActivityStatus(status) === "Implemented")}">${escapeHtml(state)}</span></h4>${activityProgressMarkup(activity, status, "Implementation progress")}${activityUpdatesMarkup(updates, activity.id)}${activityReviewMarkup(activity, person, updates)}<div class="activity-reply-controls"><label>Reply to ${escapeHtml(person.fullName)}<textarea data-manager-reply="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" maxlength="5000" placeholder="Write guidance or a reply..."></textarea></label><label>Attach documents<input data-manager-files="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" type="file" multiple></label><button type="button" class="btn btn-secondary" data-send-manager-reply="${escapeHtml(activity.id)}" data-reply-user="${escapeHtml(person.id)}">Send reply</button></div></div>`; }).join("")}</article>`).join("") || '<p class="empty-reports">No activities in your oversight scope yet.</p>';
+    bindActivityHistoryDownloads(list, activities, messageNode);
     collapseActivityCards(list);
     list.querySelectorAll("[data-update-activity]").forEach(editForm => editForm.addEventListener("submit", async event => {
       event.preventDefault(); const data = new FormData(editForm); const activityId = editForm.dataset.updateActivity;
       try { const files = [...(editForm.elements.attachments.files || [])]; const total = files.reduce((sum, file) => sum + file.size, 0); if (files.length + (activities.find(item => item.id === activityId)?.attachments || []).length > 10 || total > 50 * 1024 * 1024) throw new Error("Attach up to ten files with a combined size no larger than 50 MB."); const attachments = [...(activities.find(item => item.id === activityId)?.attachments || []).map(({ id }) => ({ id })), ...await readActivityFiles(files)]; const result = await api("/api/manager/activities/" + encodeURIComponent(activityId), { method: "PUT", body: JSON.stringify({ title: data.get("title"), description: data.get("description"), deadline: data.get("deadline"), previousDeadline: data.get("previousDeadline"), assigneeIds: data.getAll("assigneeIds"), attachments }) }); showMessage(messageNode, result.changed === false ? "No activity details changed." : "Activity updated. Affected users have been notified.", "success"); await loadManagerActivities(prefix); }
       catch (error) { showMessage(messageNode, error.message); }
     }));
+    list.querySelectorAll("[data-activity-review]").forEach(reviewForm => {
+      const decisionField = reviewForm.elements.decision; const feedbackField = reviewForm.elements.feedback;
+      decisionField.addEventListener("change", () => { feedbackField.required = decisionField.value === "Rejected"; });
+      reviewForm.addEventListener("submit", async event => {
+      event.preventDefault(); const data = new FormData(reviewForm); const activityId = reviewForm.dataset.activityReview; const userId = reviewForm.dataset.reviewUser;
+      try {
+        await api(`/api/manager/activities/${encodeURIComponent(activityId)}/assignees/${encodeURIComponent(userId)}/reviews`, { method: "POST", body: JSON.stringify({ updateId: reviewForm.dataset.reviewUpdate, decision: data.get("decision"), feedback: data.get("feedback"), deadline: data.get("deadline") }) });
+        showMessage(messageNode, "Review submitted and the user has been notified.", "success"); await loadManagerActivities(prefix);
+      } catch (error) { showMessage(messageNode, error.message); }
+      });
+    });
     list.querySelectorAll("[data-send-manager-reply]").forEach(button => button.addEventListener("click", async () => {
       const activityId = button.dataset.sendManagerReply; const userId = button.dataset.replyUser; const field = list.querySelector(`[data-manager-reply="${activityId}-${userId}"]`);
       try { const files = [...(list.querySelector(`[data-manager-files="${activityId}-${userId}"]`).files || [])]; if (files.length > 10 || files.reduce((sum, file) => sum + file.size, 0) > 50 * 1024 * 1024) throw new Error("Attach up to ten files with a combined size no larger than 50 MB."); const attachments = await readActivityFiles(files); await api(`/api/manager/activities/${activityId}/assignees/${userId}/replies`, { method: "POST", body: JSON.stringify({ text: field.value, attachments }) }); showMessage(messageNode, "Reply sent to the user.", "success"); await loadManagerActivities(prefix); }
@@ -822,5 +958,6 @@ form.addEventListener("submit", async event => {
   catch (error) { showMessage(message, error.message); }
 });
 form.addEventListener("reset", () => { message.className = "form-message"; message.textContent = ""; });
-setInterval(() => { if (signedInUser) { document.getElementById("globalCurrentDate").textContent = currentPortalDate(); document.getElementById("globalCurrentDate").dateTime = new Date().toISOString().slice(0,10); } if (activeDashboard === "weekly") refreshPublicHolidays().catch(() => {}); else if (activeDashboard === "assigned") loadMyActivities(); else if (activeDashboard === "community") loadCommunityFeed(signedInUser?.role === "admin" ? "admin" : "user"); else if (activeDashboard === "manager-activities") loadManagerActivities(signedInUser?.role === "admin" ? "admin" : "user"); }, 60000);
+setInterval(() => { if (signedInUser) { document.getElementById("globalCurrentDate").textContent = currentPortalDate(); document.getElementById("globalCurrentDate").dateTime = new Date().toISOString().slice(0,10); } if (activeDashboard === "weekly") refreshPublicHolidays().catch(() => {}); else if (activeDashboard === "community") loadCommunityFeed(signedInUser?.role === "admin" ? "admin" : "user"); }, 60000);
+setInterval(() => { if (!signedInUser) return; if (activeDashboard === "assigned") loadMyActivities(); else if (activeDashboard === "manager-activities") loadManagerActivities(signedInUser.role === "admin" ? "admin" : "user"); }, 15000);
 (async () => { try { const { user } = await api("/api/session"); if (user) { showDashboard(user); openDashboardFromNotificationLink(); } else showLogin(); } catch (error) { showLogin(); showMessage(loginMessage, error.message); } })();

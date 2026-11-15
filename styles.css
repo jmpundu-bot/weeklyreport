@@ -228,6 +228,23 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .activity-update-controls label { max-width: 220px; margin: 0; }
 .assignee-progress { padding-top: 10px; border-top: 1px solid var(--line); }
 .assignee-progress h4 { margin: 8px 0 0; font-size: 13px; }
+.activity-review-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: end; gap: 10px; padding: 14px; margin: 12px 0; border: 1px solid var(--line); border-radius: 9px; background: #f8fbf8; }
+.activity-review-form h5 { grid-column: 1 / -1; margin: 0; color: var(--green-dark); font-size: 13px; }
+.activity-review-form label { margin: 0; }
+.activity-review-form textarea { min-height: 60px; }
+.activity-review-form button { justify-self: start; }
+.activity-progress { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 20px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: #f8fbf8; }
+.activity-progress label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px 12px; margin: 0; color: var(--green-dark); font-size: 12px; font-weight: 700; }
+.activity-progress progress { grid-column: 1 / -1; width: 100%; height: 10px; overflow: hidden; border: 0; border-radius: 999px; appearance: none; background: #e5ece6; }
+.activity-progress progress::-webkit-progress-bar { border-radius: 999px; background: #e5ece6; }
+.activity-progress progress::-webkit-progress-value { border-radius: 999px; background: var(--green); }
+.activity-progress progress::-moz-progress-bar { border-radius: 999px; background: var(--green); }
+.activity-progress .timeline-progress.progress-light-orange::-webkit-progress-value, .activity-progress .timeline-progress.progress-light-orange::-moz-progress-bar { background: #f6c875; }
+.activity-progress .timeline-progress.progress-dark-orange::-webkit-progress-value, .activity-progress .timeline-progress.progress-dark-orange::-moz-progress-bar { background: #e9821c; }
+.activity-progress .timeline-progress.progress-light-red::-webkit-progress-value, .activity-progress .timeline-progress.progress-light-red::-moz-progress-bar { background: #ed8585; }
+.activity-progress .timeline-progress.progress-dark-red::-webkit-progress-value, .activity-progress .timeline-progress.progress-dark-red::-moz-progress-bar { background: #b4232f; }
+.activity-progress .implementation-progress::-webkit-progress-value, .activity-progress .implementation-progress::-moz-progress-bar { background: #d59421; }
+.activity-progress label span { color: var(--muted); font-size: 11px; font-weight: 500; }
 .activity-reply-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 10px; }
 .activity-reply-controls label { margin: 0; }
 .activity-reply-controls textarea { min-height: 58px; }

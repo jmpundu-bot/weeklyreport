@@ -21,6 +21,8 @@ The administrator can create user accounts from the Admin Dashboard. User email 
 
 ## Email notifications
 
-The portal sends individual notifications for new Community Engagement posts (to other active users), sent Line Manager feedback (to the report owner), and activity assignments, edits, deadline changes, or Line Manager replies (to affected assignees). Draft feedback does not notify the report owner.
+Email notifications are sent individually to people connected to the event. Activity notices go to affected assignees, the activity owner and assigned Line Managers, Senior users with supervisory scope, and Heads responsible for the affected departments. Report submissions, sent feedback, and replies go to the report owner and assigned Line Manager plus relevant Seniors and the Head for that department. Private report chat goes only to its named recipient. Staff Engagement comments and replies notify people already participating in that thread; general posts do not email uninvolved staff. The person who triggered an event is not emailed about their own action, and drafts do not trigger email.
 
 Configure authenticated SMTP in `.env` using `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_STARTTLS`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM`. Set `APP_BASE_URL` to an address recipients can open. Email delivery remains disabled until the SMTP settings are valid. Keep `.env` private.
+
+Vercel runs the protected deadline reminder job daily at 06:00 UTC (08:00 in Zambia). Configure `CRON_SECRET` in the Vercel project environment to a long random value; Vercel sends it as a Bearer token to the reminder endpoint. The job sends reminders one day before and on the due date to active assignees who have not completed the activity and their relevant supervisors. Reminder delivery is tracked per deadline and recipient to avoid duplicate emails.
