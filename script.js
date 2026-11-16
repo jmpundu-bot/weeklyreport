@@ -753,7 +753,7 @@ function monitoringProgress(status, savedPercent) {
 function activityMonitoringDashboard(entries, label) {
   const total = entries.length;
   const completed = entries.filter(item => item.progress >= 100).length;
-  const inProgress = entries.filter(item => item.progress > 0 && item.progress < 100).length;
+  const inProgress = entries.filter(item => item.progress < 100).length;
   const overdue = entries.filter(item => item.deadline < lusakaToday() && item.progress < 100).length;
   const average = total ? Math.round(entries.reduce((sum, item) => sum + item.progress, 0) / total) : 0;
   return `<section class="activity-monitor-dashboard" aria-label="${escapeHtml(label)}" data-monitor-deadlines="${entries.map(item => escapeHtml(item.deadline)).join(",")}"><div class="activity-monitor-heading"><div><h3>Activity monitoring dashboard</h3><p>${escapeHtml(label)} · Updated from the latest saved progress and evidence</p></div></div><div class="activity-monitor-stats"><article class="activity-monitor-stat stat-assigned"><strong data-monitor-stat="assigned">${total}</strong><span>Assigned activities</span></article><article class="activity-monitor-stat stat-completed"><strong data-monitor-stat="completed">${completed}</strong><span>Completed</span></article><article class="activity-monitor-stat stat-progress"><strong data-monitor-stat="progress">${inProgress}</strong><span>In progress</span></article><article class="activity-monitor-stat stat-overdue"><strong data-monitor-stat="overdue">${overdue}</strong><span>Overdue</span></article></div><div class="activity-monitor-overall"><div><h4>Overall activity completion</h4><strong data-monitor-average>${average}%</strong><span data-monitor-completed>${completed} of ${total} activities completed</span></div><span class="activity-monitor-track" role="progressbar" aria-label="Overall activity completion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${average}"><span style="--progress-value:${average}%"></span></span></div></section>`;
@@ -769,7 +769,7 @@ function refreshActivityMonitoringSummary(container) {
   });
   const total = entries.length;
   const completed = entries.filter(entry => entry.progress >= 100).length;
-  const inProgress = entries.filter(entry => entry.progress > 0 && entry.progress < 100).length;
+  const inProgress = entries.filter(entry => entry.progress < 100).length;
   const overdue = entries.filter(entry => entry.deadline < lusakaToday() && entry.progress < 100).length;
   const average = total ? Math.round(entries.reduce((sum, entry) => sum + entry.progress, 0) / total) : 0;
   dashboard.querySelector('[data-monitor-stat="assigned"]').textContent = total;
