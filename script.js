@@ -25,6 +25,9 @@ let loadingDraft = false;
 let publicHolidayMap = new Map();
 let notificationTimer = null;
 let managerActivityRetryTimer = null;
+let dashboardSyncTimer = null;
+let lastDashboardRevision = '';
+let dashboardSyncInProgress = false;
 async function refreshNotifications() {
   if (!signedInUser) return;
   try {
@@ -271,11 +274,73 @@ function showDashboard(user) {
   document.getElementById("appNavigation").hidden = false;
   setNavigationOpen(false);
   buildDashboardNavigation(user);
+  lastDashboardRevision = '';
+  if (dashboardSyncTimer) clearInterval(dashboardSyncTimer);
+  dashboardSyncTimer = setInterval(syncDashboardChanges, 2000);
   if (notificationTimer) clearInterval(notificationTimer);
   notificationTimer = setInterval(refreshNotifications, 15000);
   refreshNotifications();
 }
-function showLogin() { signedInUser = null; activeDashboard = ""; document.getElementById("dashboardHeader").hidden = true; document.getElementById("dashboardHome").hidden = true; document.getElementById("appNavigation").hidden = true; setNavigationOpen(false); if (notificationTimer) clearInterval(notificationTimer); notificationTimer = null; loginScreen.hidden = false; pageShell.hidden = true; adminScreen.hidden = true; loginForm.hidden = true; document.querySelector(".login-options").hidden = false; loginMessage.textContent = ""; }
+function showLogin() { signedInUser = null; activeDashboard = ""; document.getElementById("dashboardHeader").hidden = true; document.getElementById("dashboardHome").hidden = true; document.getElementById("appNavigation").hidden = true; setNavigationOpen(false); if (notificationTimer) clearInterval(notificationTimer); notificationTimer = null; if (dashboardSyncTimer) clearInterval(dashboardSyncTimer); dashboardSyncTimer = null; lastDashboardRevision = ''; loginScreen.hidden = false; pageShell.hidden = true; adminScreen.hidden = true; loginForm.hidden = true; document.querySelector(".login-options").hidden = false; loginMessage.textContent = ""; }
+
+function dashboardHasUnsavedInput() {
+  if (document.getElementById("editUserDialog").open) return true;
+  const panel = activeDashboard === "admin-users" ? document.getElementById("adminUsersSection")
+    : activeDashboard === "admin-holidays" ? document.getElementById("adminHolidaysSection")
+      : activeDashboard === "community" ? document.getElementById(signedInUser?.role === "admin" ? "adminCommunitySection" : "userCommunitySection")
+        : activeDashboard === "manager-activities" ? document.getElementById(signedInUser?.role === "admin" ? "adminActivitySection" : "managerActivitySection")
+          : activeDashboard === "manager-reports" ? document.getElementById(signedInUser?.role === "admin" ? "adminReviewSection" : "managerReviewSection")
+            : activeDashboard === "assigned" ? document.getElementById("myActivitiesSection")
+              : activeDashboard === "reports" ? document.getElementById("myReportsSection")
+          : null;
+  if (!panel) return false;
+  const focused = document.activeElement;
+  if (focused && panel.contains(focused) && /^(INPUT|TEXTAREA|SELECT)$/.test(focused.tagName)) return true;
+  return [...panel.querySelectorAll('input[type="file"]')].some(input => input.files?.length);
+}
+
+async function refreshActiveDashboard() {
+  if (activeDashboard === "admin-users") return loadUsers();
+  if (activeDashboard === "admin-holidays") { await loadHolidayAdmin(); await refreshPublicHolidays(); return; }
+  if (activeDashboard === "community") return loadCommunityFeed(signedInUser?.role === "admin" ? "admin" : "user");
+  if (activeDashboard === "assigned") return loadMyActivities();
+  if (activeDashboard === "reports") return loadMyReports();
+  if (activeDashboard === "manager-activities") return loadManagerActivities(signedInUser?.role === "admin" ? "admin" : "user");
+  if (activeDashboard === "manager-reports") {
+    const admin = signedInUser?.role === "admin";
+    const usersListId = admin ? "adminManagerUsers" : "managerUsers";
+    const usersList = document.getElementById(usersListId);
+    const selected = usersList?.querySelector("[data-manager-user].is-selected")?.dataset.managerUser
+      || (usersList?.querySelector("[data-manager-department].is-selected") && `department:${usersList.querySelector("[data-manager-department].is-selected").dataset.managerDepartment}`)
+      || "";
+    return admin
+      ? loadManagerReports(usersListId, "adminManagerReports", "adminSelectedUserHeading", "adminManagerMessage", selected)
+      : loadManagerReports("managerUsers", "managerReports", "selectedUserHeading", "managerMessage", selected);
+  }
+  if (activeDashboard === "weekly") return refreshPublicHolidays();
+}
+
+async function syncDashboardChanges() {
+  if (!signedInUser || dashboardSyncInProgress || document.hidden) return;
+  dashboardSyncInProgress = true;
+  try {
+    const { revision } = await api("/api/changes");
+    if (!lastDashboardRevision) { lastDashboardRevision = revision; return; }
+    if (revision === lastDashboardRevision || dashboardHasUnsavedInput()) return;
+    const { user } = await api("/api/session");
+    if (!user) { showLogin(); return; }
+    signedInUser = user;
+    document.getElementById("dashboardWelcome").textContent = "Welcome, " + user.fullName;
+    document.getElementById("globalUserName").textContent = user.fullName;
+    document.getElementById("globalUserEmail").textContent = user.email;
+    buildDashboardNavigation(user);
+    document.querySelectorAll(".dashboard-nav-link").forEach(button => button.classList.toggle("is-current", button.dataset.navDashboard === activeDashboard));
+    await refreshActiveDashboard();
+    await refreshNotifications();
+    lastDashboardRevision = revision;
+  } catch { /* Keep the last rendered dashboard during transient network errors. */ }
+  finally { dashboardSyncInProgress = false; }
+}
 document.querySelectorAll("[data-login-role]").forEach(button => button.addEventListener("click", () => {
   loginRole = button.dataset.loginRole; loginForm.hidden = false; document.querySelector(".login-options").hidden = true;
   document.getElementById("loginHeading").textContent = `${loginRole === "admin" ? "Admin" : "User"} Dashboard sign in`;
@@ -590,7 +655,7 @@ function deadlineIndicatorColor(deadline, completed = false) {
   return `rgb(${color.join(", ")})`;
 }
 function activityUpdatesMarkup(updates, activityId) {
-  return updates?.length ? newestFirst(updates).map(update => `<p class="activity-update"><strong>${escapeHtml(update.authorName)} · ${escapeHtml(normalizeActivityStatus(update.status))}</strong><small>${escapeHtml(new Date(update.createdAt).toLocaleString())}</small><br>${escapeHtml(update.text)}${update.review ? `<br><strong>Line Manager ${escapeHtml(update.review.decision)}</strong>${update.review.feedback ? ` · ${escapeHtml(update.review.feedback)}` : ""}${update.review.deadline ? `<br>Revised deadline: ${escapeHtml(update.review.deadline)}` : ""}` : ""}${update.attachments?.length ? `<span class="community-attachments">${update.attachments.map(item => `<a class="community-attachment" href="/api/activities/${encodeURIComponent(activityId)}/attachments/${encodeURIComponent(item.id)}">${escapeHtml(item.name)}</a>`).join("")}</span>` : ""}</p>`).join("") : '<p class="empty-reports">No progress updates yet.</p>';
+  return updates?.length ? newestFirst(updates).map(update => `<p class="activity-update"><strong>${escapeHtml(update.authorName)} · ${escapeHtml(normalizeActivityStatus(update.status))}${Number.isFinite(update.progressPercent) ? ` · ${update.progressPercent}%` : ""}</strong><small>${escapeHtml(new Date(update.createdAt).toLocaleString())}</small><br>${escapeHtml(update.text)}${update.review ? `<br><strong>Line Manager ${escapeHtml(update.review.decision)}</strong>${update.review.feedback ? ` · ${escapeHtml(update.review.feedback)}` : ""}${update.review.deadline ? `<br>Revised deadline: ${escapeHtml(update.review.deadline)}` : ""}` : ""}${update.attachments?.length ? `<span class="community-attachments">${update.attachments.map(item => `<a class="community-attachment" href="/api/activities/${encodeURIComponent(activityId)}/attachments/${encodeURIComponent(item.id)}">${escapeHtml(item.name)}</a>`).join("")}</span>` : ""}</p>`).join("") : '<p class="empty-reports">No progress updates yet.</p>';
 }
 function normalizeActivityStatus(status) {
   return ({ "Not Started": "Started", Completed: "Implemented" })[status] || status || "Started";
@@ -682,18 +747,86 @@ function implementationProgress(status) {
   if (typeof status === "number") return Math.max(0, Math.min(100, Math.round(status)));
   return ({ Started: 0, "On Hold": 50, "In Progress": 50, Implemented: 100 })[status] ?? 0;
 }
+function monitoringProgress(status, savedPercent) {
+  return Number.isFinite(Number(savedPercent)) && savedPercent !== null && savedPercent !== "" ? Math.max(0, Math.min(100, Math.round(Number(savedPercent)))) : implementationProgress(status);
+}
+function activityMonitoringDashboard(entries, label) {
+  const total = entries.length;
+  const completed = entries.filter(item => item.progress >= 100).length;
+  const inProgress = entries.filter(item => item.progress > 0 && item.progress < 100).length;
+  const overdue = entries.filter(item => item.deadline < lusakaToday() && item.progress < 100).length;
+  const average = total ? Math.round(entries.reduce((sum, item) => sum + item.progress, 0) / total) : 0;
+  return `<section class="activity-monitor-dashboard" aria-label="${escapeHtml(label)}" data-monitor-deadlines="${entries.map(item => escapeHtml(item.deadline)).join(",")}"><div class="activity-monitor-heading"><div><h3>Activity monitoring dashboard</h3><p>${escapeHtml(label)} · Updated from the latest saved progress and evidence</p></div></div><div class="activity-monitor-stats"><article class="activity-monitor-stat stat-assigned"><strong data-monitor-stat="assigned">${total}</strong><span>Assigned activities</span></article><article class="activity-monitor-stat stat-completed"><strong data-monitor-stat="completed">${completed}</strong><span>Completed</span></article><article class="activity-monitor-stat stat-progress"><strong data-monitor-stat="progress">${inProgress}</strong><span>In progress</span></article><article class="activity-monitor-stat stat-overdue"><strong data-monitor-stat="overdue">${overdue}</strong><span>Overdue</span></article></div><div class="activity-monitor-overall"><div><h4>Overall activity completion</h4><strong data-monitor-average>${average}%</strong><span data-monitor-completed>${completed} of ${total} activities completed</span></div><span class="activity-monitor-track" role="progressbar" aria-label="Overall activity completion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${average}"><span style="--progress-value:${average}%"></span></span></div></section>`;
+}
+function refreshActivityMonitoringSummary(container) {
+  const dashboard = container.querySelector(".activity-monitor-dashboard");
+  if (!dashboard) return;
+  const deadlines = dashboard.dataset.monitorDeadlines?.split(",") || [];
+  const entries = [...container.querySelectorAll(".activity-card")].map((card, index) => {
+    const slider = card.querySelector("[data-activity-progress]");
+    const track = card.querySelector("[data-activity-monitor-progress]");
+    return { deadline: slider?.dataset.monitorDeadline || card.dataset.deadline || deadlines[index] || "", progress: Number(slider?.value ?? track?.dataset.activityMonitorProgress ?? 0) };
+  });
+  const total = entries.length;
+  const completed = entries.filter(entry => entry.progress >= 100).length;
+  const inProgress = entries.filter(entry => entry.progress > 0 && entry.progress < 100).length;
+  const overdue = entries.filter(entry => entry.deadline < lusakaToday() && entry.progress < 100).length;
+  const average = total ? Math.round(entries.reduce((sum, entry) => sum + entry.progress, 0) / total) : 0;
+  dashboard.querySelector('[data-monitor-stat="assigned"]').textContent = total;
+  dashboard.querySelector('[data-monitor-stat="completed"]').textContent = completed;
+  dashboard.querySelector('[data-monitor-stat="progress"]').textContent = inProgress;
+  dashboard.querySelector('[data-monitor-stat="overdue"]').textContent = overdue;
+  dashboard.querySelector("[data-monitor-average]").textContent = `${average}%`;
+  dashboard.querySelector("[data-monitor-completed]").textContent = `${completed} of ${total} activities completed`;
+  const track = dashboard.querySelector(".activity-monitor-track");
+  track.setAttribute("aria-valuenow", String(average));
+  track.firstElementChild.style.setProperty("--progress-value", `${average}%`);
+}
+function activityEvidenceMarkup(updates, activityId, authorId = "") {
+  const evidence = (updates || []).filter(update => !authorId || update.authorId === authorId).flatMap(update => update.attachments || []);
+  if (!evidence.length) return '<p class="activity-evidence-empty">No progress evidence attached yet.</p>';
+  return `<div class="activity-evidence"><strong>Progress evidence · ${evidence.length} file${evidence.length === 1 ? "" : "s"}</strong><div>${evidence.map(file => `<a class="community-attachment" href="/api/activities/${encodeURIComponent(activityId)}/attachments/${encodeURIComponent(file.id)}">${escapeHtml(file.name)}</a>`).join("")}</div></div>`;
+}
 function timelineProgressBand(percent) {
   if (percent >= 75) return "progress-dark-red";
   if (percent >= 50) return "progress-light-red";
   if (percent >= 25) return "progress-dark-orange";
   return "progress-light-orange";
 }
-function activityProgressMarkup(activity, status, label = "Implementation progress") {
+function activityProgressMarkup(activity, status, label = "Implementation progress", progressKey = "") {
   const timeline = activityTimelineProgress(activity);
   const implementation = implementationProgress(status);
   const implementationLabel = typeof status === "number" ? `${implementation}% complete` : `${implementation}% · ${escapeHtml(status)}`;
   const progressBand = timelineProgressBand(timeline);
-  return `<div class="activity-progress" aria-label="Activity progress"><label>Timeline <span>${timeline}% elapsed</span><span class="activity-progress-track ${progressBand}" role="progressbar" aria-label="Timeline elapsed" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${timeline}" aria-valuetext="${timeline}% elapsed"><span class="activity-progress-fill" style="--progress-value:${timeline}%"></span></span></label><label>${escapeHtml(label)} <span>${implementationLabel}</span><span class="activity-progress-track ${progressBand}" role="progressbar" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${implementation}" aria-valuetext="${implementationLabel}"><span class="activity-progress-fill" style="--progress-value:${implementation}%"></span></span></label></div>`;
+  return `<div class="activity-progress" aria-label="Activity progress"><label>Timeline <span>${timeline}% elapsed</span><span class="activity-progress-track ${progressBand}" role="progressbar" aria-label="Timeline elapsed" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${timeline}" aria-valuetext="${timeline}% elapsed"><span class="activity-progress-fill" style="--progress-value:${timeline}%"></span></span></label><label>${escapeHtml(label)} <span data-progress-label="${escapeHtml(progressKey)}">${implementationLabel}</span><span class="activity-progress-track ${progressBand}" role="progressbar" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${implementation}" aria-valuetext="${implementationLabel}" ${progressKey ? `data-progress-track="${escapeHtml(progressKey)}"` : ""}><span class="activity-progress-fill" style="--progress-value:${implementation}%"></span></span></label></div>`;
+}
+function activityProgressControlMarkup(id, percent, deadline) {
+  return `<label class="activity-progress-control" for="activity-progress-${escapeHtml(id)}">Progress percentage <output data-progress-output="${escapeHtml(id)}">${percent}%</output><input id="activity-progress-${escapeHtml(id)}" type="range" min="0" max="100" step="5" value="${percent}" data-activity-progress="${escapeHtml(id)}" data-monitor-deadline="${escapeHtml(deadline || "")}" aria-label="Activity progress percentage"></label>`;
+}
+function bindActivityProgressControls(container) {
+  container.querySelectorAll("[data-activity-progress]").forEach(slider => {
+    const id = slider.dataset.activityProgress;
+    const card = slider.closest(".activity-card");
+    const status = card?.querySelector(`[data-activity-status="${id}"]`);
+    const update = value => {
+      const percent = Math.max(0, Math.min(100, Number(value) || 0));
+      const output = card.querySelector(`[data-progress-output="${id}"]`);
+      const label = card.querySelector(`[data-progress-label="${id}"]`);
+      const track = card.querySelector(`[data-progress-track="${id}"]`);
+      if (output) output.value = `${percent}%`;
+      if (label) label.textContent = `${percent}% complete`;
+      if (track) { track.setAttribute("aria-valuenow", String(percent)); track.setAttribute("aria-valuetext", `${percent}% complete`); track.querySelector(".activity-progress-fill").style.setProperty("--progress-value", `${percent}%`); }
+      refreshActivityMonitoringSummary(container);
+    };
+    slider.addEventListener("input", () => {
+      if (status) status.value = Number(slider.value) >= 100 ? "Implemented" : Number(slider.value) <= 0 ? "Started" : "In Progress";
+      update(slider.value);
+    });
+    status?.addEventListener("change", () => {
+      slider.value = ({ Started: "0", "In Progress": "50", "On Hold": "50", Implemented: "100" })[status.value] || "0";
+      update(slider.value);
+    });
+  });
 }
 async function downloadActivityHistoryReport(activity) {
   const pageWidth = 595; const pageHeight = 842; const scale = 2; const margin = 42; const bottom = pageHeight - 42;
@@ -736,8 +869,8 @@ async function downloadActivityHistoryReport(activity) {
   newPage(true);
   paragraph("Activity", activity.title); paragraph("Created", new Date(activity.createdAt).toLocaleString()); paragraph("Deadline", activity.deadline);
   paragraph("Timeline progress", `${activityTimelineProgress(activity)}% elapsed`);
-  if (activity.assignees?.length) for (const person of activity.assignees) paragraph(`Status · ${person.fullName}`, activity.statusByUser?.[person.id] || "Started");
-  else paragraph("Current status", activity.status || "Started");
+  if (activity.assignees?.length) for (const person of activity.assignees) paragraph(`Status · ${person.fullName}`, `${activity.statusByUser?.[person.id] || "Started"} · ${monitoringProgress(activity.statusByUser?.[person.id], activity.progressPercentByUser?.[person.id])}%`);
+  else paragraph("Current status", `${activity.status || "Started"} · ${monitoringProgress(activity.status, activity.progressPercent)}%`);
   heading("ACTIVITY DETAILS"); block("Instructions", activity.description);
   if (activity.attachments?.length) block("Activity documents", activity.attachments.map(item => item.name).join(", "));
   heading("PROGRESS UPDATES AND MANAGER REVIEWS");
@@ -751,7 +884,7 @@ async function downloadActivityHistoryReport(activity) {
   const history = [...(activity.history || [])].sort((a, b) => String(a.at).localeCompare(String(b.at)));
   for (const entry of history) {
     const assignee = people.get(entry.assigneeId);
-    const summary = [entry.actorName ? `By: ${entry.actorName}` : "", assignee ? `Assignee: ${assignee}` : "", entry.previousStatus || entry.status ? `Status: ${entry.previousStatus || "—"} → ${entry.status || "—"}` : "", entry.previousDeadline || entry.deadline ? `Deadline: ${entry.previousDeadline || "—"} → ${entry.deadline || "—"}` : "", entry.details || ""].filter(Boolean).join("\n");
+    const summary = [entry.actorName ? `By: ${entry.actorName}` : "", assignee ? `Assignee: ${assignee}` : "", entry.previousStatus || entry.status ? `Status: ${entry.previousStatus || "—"} → ${entry.status || "—"}` : "", Number.isFinite(entry.progressPercent) ? `Progress: ${entry.progressPercent}%` : "", entry.previousDeadline || entry.deadline ? `Deadline: ${entry.previousDeadline || "—"} → ${entry.deadline || "—"}` : "", entry.details || ""].filter(Boolean).join("\n");
     block(`${eventNames[entry.type] || entry.type || "Activity update"} · ${entry.at ? new Date(entry.at).toLocaleString() : ""}`, summary);
   }
   for (let index = 0; index < pages.length; index++) {
@@ -789,16 +922,19 @@ async function loadMyActivities() {
   try {
     const { activities } = await api("/api/my/activities");
     activities.splice(0, activities.length, ...newestFirst(activities, item => newestFirst(item.updates)[0]?.createdAt || item.updatedAt || item.createdAt));
+    const monitorEntries = activities.map(activity => ({ deadline: activity.deadline, progress: monitoringProgress(activity.status, activity.progressPercent) }));
     const openStates = activityCardOpenStates(container);
-    container.innerHTML = activities.map(activity => {
+    container.innerHTML = activityMonitoringDashboard(monitorEntries, "Your assigned work") + activities.map(activity => {
       const state = deadlineState(activity.deadline, normalizeActivityStatus(activity.status) === "Implemented");
-      return `<article class="manager-report-card activity-card" data-activity-id="${escapeHtml(activity.id)}"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · <span class="deadline-indicator" style="--deadline-indicator-color:${deadlineIndicatorColor(activity.deadline, normalizeActivityStatus(activity.status) === "Implemented")}">${escapeHtml(state)}</span></p></div><span class="report-date">Assigned ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header>${activityProgressMarkup(activity, activity.status)}<button type="button" class="btn btn-secondary" data-download-activity-report="${escapeHtml(activity.id)}">Download detailed PDF report</button><p class="activity-description">${escapeHtml(activity.description)}</p>${activityAttachmentsMarkup(activity)}<div class="activity-updates">${activityUpdatesMarkup(activity.updates, activity.id)}</div><label>Progress update<textarea data-activity-update="${escapeHtml(activity.id)}" maxlength="5000" placeholder="Share progress or explain a delay..."></textarea></label><label>Attach documents<input data-activity-files="${escapeHtml(activity.id)}" type="file" multiple></label><div class="activity-update-controls"><label>Status<select data-activity-status="${escapeHtml(activity.id)}"><option${normalizeActivityStatus(activity.status) === "Started" ? " selected" : ""}>Started</option><option${normalizeActivityStatus(activity.status) === "In Progress" ? " selected" : ""}>In Progress</option><option${activity.status === "On Hold" ? " selected" : ""}>On Hold</option><option${normalizeActivityStatus(activity.status) === "Implemented" ? " selected" : ""}>Implemented</option></select></label><button type="button" class="btn btn-secondary" data-save-activity="${escapeHtml(activity.id)}">Send update</button></div></article>`;
+      const progress = monitoringProgress(activity.status, activity.progressPercent);
+      return `<article class="manager-report-card activity-card" data-activity-id="${escapeHtml(activity.id)}"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · <span class="deadline-indicator" style="--deadline-indicator-color:${deadlineIndicatorColor(activity.deadline, normalizeActivityStatus(activity.status) === "Implemented")}">${escapeHtml(state)}</span></p></div><span class="report-date">Assigned ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header>${activityProgressMarkup(activity, progress, "Your implementation progress", activity.id)}<button type="button" class="btn btn-secondary" data-download-activity-report="${escapeHtml(activity.id)}">Download detailed PDF report</button><p class="activity-description">${escapeHtml(activity.description)}</p>${activityAttachmentsMarkup(activity)}${activityEvidenceMarkup(activity.updates, activity.id, signedInUser?.id)}<div class="activity-updates">${activityUpdatesMarkup(activity.updates, activity.id)}</div><label>Progress update<textarea data-activity-update="${escapeHtml(activity.id)}" maxlength="5000" placeholder="Describe what you completed, what is next, and any blockers..."></textarea></label><label>Attach progress evidence <span class="field-hint">Photos, documents, or other proof of work</span><input data-activity-files="${escapeHtml(activity.id)}" type="file" multiple></label><div class="activity-update-controls"><label>Status<select data-activity-status="${escapeHtml(activity.id)}"><option${normalizeActivityStatus(activity.status) === "Started" ? " selected" : ""}>Started</option><option${normalizeActivityStatus(activity.status) === "In Progress" ? " selected" : ""}>In Progress</option><option${activity.status === "On Hold" ? " selected" : ""}>On Hold</option><option${normalizeActivityStatus(activity.status) === "Implemented" ? " selected" : ""}>Implemented</option></select></label>${activityProgressControlMarkup(activity.id, progress)}<button type="button" class="btn btn-secondary" data-save-activity="${escapeHtml(activity.id)}">Save progress and evidence</button></div></article>`;
     }).join("") || '<p class="empty-reports">No activities have been assigned to you.</p>';
+    bindActivityProgressControls(container);
     bindActivityHistoryDownloads(container, activities, document.getElementById("myActivitiesMessage"));
     collapseActivityCards(container, openStates);
     container.querySelectorAll("[data-save-activity]").forEach(button => button.addEventListener("click", async () => {
       const id = button.dataset.saveActivity; const field = container.querySelector(`[data-activity-update="${id}"]`); const status = container.querySelector(`[data-activity-status="${id}"]`).value;
-      try { const files = [...(container.querySelector(`[data-activity-files="${id}"]`).files || [])]; if (files.length > 10 || files.reduce((sum, file) => sum + file.size, 0) > 50 * 1024 * 1024) throw new Error("Attach up to ten files with a combined size no larger than 50 MB."); const attachments = await readActivityFiles(files); await api(`/api/my/activities/${id}/updates`, { method: "POST", body: JSON.stringify({ text: field.value, status, attachments }) }); showMessage(document.getElementById("myActivitiesMessage"), "Progress update sent to your supervisor.", "success"); await loadMyActivities(); }
+      try { const files = [...(container.querySelector(`[data-activity-files="${id}"]`).files || [])]; if (files.length > 10 || files.reduce((sum, file) => sum + file.size, 0) > 50 * 1024 * 1024) throw new Error("Attach up to ten files with a combined size no larger than 50 MB."); const attachments = await readActivityFiles(files); const progressPercent = Number(container.querySelector(`[data-activity-progress="${id}"]`).value); await api(`/api/my/activities/${id}/updates`, { method: "POST", body: JSON.stringify({ text: field.value, status, progressPercent, attachments }) }); showMessage(document.getElementById("myActivitiesMessage"), "Progress and evidence sent to your supervisor.", "success"); await loadMyActivities(); }
       catch (error) { showMessage(document.getElementById("myActivitiesMessage"), error.message); }
     }));
   } catch (error) { showMessage(document.getElementById("myActivitiesMessage"), error.message); }
@@ -814,6 +950,7 @@ async function loadManagerActivities(prefix) {
     managerActivityRetryTimer = null;
     if (messageNode.dataset.retryNotice) { messageNode.textContent = ""; messageNode.className = "form-message"; delete messageNode.dataset.retryNotice; }
     activities.splice(0, activities.length, ...newestFirst(activities, item => newestFirst(item.updates)[0]?.createdAt || item.updatedAt || item.createdAt));
+    const monitorEntries = activities.flatMap(activity => activity.assigneeIds.map(id => ({ deadline: activity.deadline, progress: monitoringProgress(activity.statusByUser?.[id], activity.progressPercentByUser?.[id]) })));
     const openStates = activityCardOpenStates(list);
     const selectedAssigneeIds = new Set([...usersNode.querySelectorAll('input[name="assigneeIds"]:checked')].map(input => input.value));
     const savedSelectAllMode = usersNode.dataset.selectAllMode;
@@ -822,7 +959,7 @@ async function loadManagerActivities(prefix) {
     usersNode.dataset.selectAllMode = String(selectAllMode);
     usersNode.querySelectorAll('input[name="assigneeIds"]').forEach(input => { input.checked = selectAllMode || selectedAssigneeIds.has(input.value); });
     bindBulkAssigneeActions(usersNode);
-    list.innerHTML = activities.map(activity => `<article class="manager-report-card activity-card" data-activity-id="${escapeHtml(activity.id)}"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · Assigned to ${activity.assignees.map(item => escapeHtml(item.fullName)).join(", ")}</p></div><span class="report-date">Created ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header>${activityProgressMarkup(activity, activity.assigneeIds.length ? activity.assigneeIds.reduce((sum, id) => sum + implementationProgress(activity.statusByUser?.[id] || "Started"), 0) / activity.assigneeIds.length : 0, "Team implementation progress")}<button type="button" class="btn btn-secondary" data-download-activity-report="${escapeHtml(activity.id)}">Download detailed PDF report</button><details class="activity-edit-details"><summary>Edit activity details</summary><form class="activity-edit-form" data-update-activity="${escapeHtml(activity.id)}"><label>Activity title<input name="title" maxlength="200" value="${escapeHtml(activity.title)}" required></label><label>Instructions<textarea name="description" maxlength="5000" required>${escapeHtml(activity.description)}</textarea></label><label>Deadline<input name="deadline" type="date" value="${escapeHtml(activity.deadline)}" required></label>${activityAttachmentsMarkup(activity)}<label>Replace or add documents <span class="field-hint">Current files stay attached; select additional files</span><input name="attachments" type="file" multiple></label><fieldset><legend>Assigned users</legend><div class="assignee-options">${selectAllAssigneesMarkup(assignedUsers.length)}${assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}" ${activity.assigneeIds.includes(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("")}</div></fieldset><input type="hidden" name="previousDeadline" value="${escapeHtml(activity.deadline)}"><button class="btn btn-secondary" type="submit">Save activity changes</button></form></details><p class="activity-description">${escapeHtml(activity.description)}</p>${activityAttachmentsMarkup(activity)}${activity.assignees.map(person => { const updates = activity.updates.filter(update => update.authorId === person.id || update.recipientId === person.id); const status = normalizeActivityStatus(activity.statusByUser?.[person.id]); const state = deadlineState(activity.deadline, normalizeActivityStatus(status) === "Implemented"); return `<div class="assignee-progress"><h4>${escapeHtml(person.fullName)} · ${escapeHtml(status)} · <span class="deadline-indicator" style="--deadline-indicator-color:${deadlineIndicatorColor(activity.deadline, normalizeActivityStatus(status) === "Implemented")}">${escapeHtml(state)}</span></h4>${activityProgressMarkup(activity, status, "Implementation progress")}${activityUpdatesMarkup(updates, activity.id)}${activityReviewMarkup(activity, person, updates)}<div class="activity-reply-controls"><label>Reply to ${escapeHtml(person.fullName)}<textarea data-manager-reply="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" maxlength="5000" placeholder="Write guidance or a reply..."></textarea></label><label>Attach documents<input data-manager-files="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" type="file" multiple></label><button type="button" class="btn btn-secondary" data-send-manager-reply="${escapeHtml(activity.id)}" data-reply-user="${escapeHtml(person.id)}">Send reply</button></div></div>`; }).join("")}</article>`).join("") || '<p class="empty-reports">No activities in your oversight scope yet.</p>';
+    list.innerHTML = activityMonitoringDashboard(monitorEntries, "Assignments in your oversight scope") + activities.map(activity => `<article class="manager-report-card activity-card" data-activity-id="${escapeHtml(activity.id)}"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · Assigned to ${activity.assignees.map(item => escapeHtml(item.fullName)).join(", ")}</p></div><span class="report-date">Created ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header>${activityProgressMarkup(activity, activity.assigneeIds.length ? activity.assigneeIds.reduce((sum, id) => sum + monitoringProgress(activity.statusByUser?.[id], activity.progressPercentByUser?.[id]), 0) / activity.assigneeIds.length : 0, "Team implementation progress")}<button type="button" class="btn btn-secondary" data-download-activity-report="${escapeHtml(activity.id)}">Download detailed PDF report</button><details class="activity-edit-details"><summary>Edit activity details</summary><form class="activity-edit-form" data-update-activity="${escapeHtml(activity.id)}"><label>Activity title<input name="title" maxlength="200" value="${escapeHtml(activity.title)}" required></label><label>Instructions<textarea name="description" maxlength="5000" required>${escapeHtml(activity.description)}</textarea></label><label>Deadline<input name="deadline" type="date" value="${escapeHtml(activity.deadline)}" required></label>${activityAttachmentsMarkup(activity)}<label>Replace or add documents <span class="field-hint">Current files stay attached; select additional files</span><input name="attachments" type="file" multiple></label><fieldset><legend>Assigned users</legend><div class="assignee-options">${selectAllAssigneesMarkup(assignedUsers.length)}${assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}" ${activity.assigneeIds.includes(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("")}</div></fieldset><input type="hidden" name="previousDeadline" value="${escapeHtml(activity.deadline)}"><button class="btn btn-secondary" type="submit">Save activity changes</button></form></details><p class="activity-description">${escapeHtml(activity.description)}</p>${activityAttachmentsMarkup(activity)}${activity.assignees.map(person => { const updates = activity.updates.filter(update => update.authorId === person.id || update.recipientId === person.id); const personalUpdates = updates.filter(update => update.authorId === person.id); const status = normalizeActivityStatus(activity.statusByUser?.[person.id]); const progress = monitoringProgress(status, activity.progressPercentByUser?.[person.id]); const state = deadlineState(activity.deadline, progress >= 100); return `<div class="assignee-progress"><h4>${escapeHtml(person.fullName)} · ${escapeHtml(status)} · ${progress}% · <span class="deadline-indicator" style="--deadline-indicator-color:${deadlineIndicatorColor(activity.deadline, progress >= 100)}">${escapeHtml(state)}</span></h4>${activityProgressMarkup(activity, progress, "Implementation progress")}${activityEvidenceMarkup(personalUpdates, activity.id)}${activityUpdatesMarkup(updates, activity.id)}${activityReviewMarkup(activity, person, updates)}<div class="activity-reply-controls"><label>Reply to ${escapeHtml(person.fullName)}<textarea data-manager-reply="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" maxlength="5000" placeholder="Write guidance or a reply..."></textarea></label><label>Attach documents<input data-manager-files="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" type="file" multiple></label><button type="button" class="btn btn-secondary" data-send-manager-reply="${escapeHtml(activity.id)}" data-reply-user="${escapeHtml(person.id)}">Send reply</button></div></div>`; }).join("")}</article>`).join("") || '<p class="empty-reports">No activities in your oversight scope yet.</p>';
     bindBulkAssigneeActions(list);
     bindActivityHistoryDownloads(list, activities, messageNode);
     collapseActivityCards(list, openStates);
@@ -1006,6 +1143,5 @@ form.addEventListener("submit", async event => {
   catch (error) { showMessage(message, error.message); }
 });
 form.addEventListener("reset", () => { message.className = "form-message"; message.textContent = ""; });
-setInterval(() => { if (signedInUser) { document.getElementById("globalCurrentDate").textContent = currentPortalDate(); document.getElementById("globalCurrentDate").dateTime = new Date().toISOString().slice(0,10); } if (activeDashboard === "weekly") refreshPublicHolidays().catch(() => {}); else if (activeDashboard === "community") loadCommunityFeed(signedInUser?.role === "admin" ? "admin" : "user"); }, 60000);
-setInterval(() => { if (!signedInUser) return; if (activeDashboard === "assigned") loadMyActivities(); else if (activeDashboard === "manager-activities") loadManagerActivities(signedInUser.role === "admin" ? "admin" : "user"); }, 15000);
+setInterval(() => { if (signedInUser) { document.getElementById("globalCurrentDate").textContent = currentPortalDate(); document.getElementById("globalCurrentDate").dateTime = new Date().toISOString().slice(0,10); } }, 60000);
 (async () => { try { const { user } = await api("/api/session"); if (user) { showDashboard(user); openDashboardFromNotificationLink(); } else showLogin(); } catch (error) { showLogin(); showMessage(loginMessage, error.message); } })();

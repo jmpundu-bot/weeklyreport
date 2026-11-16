@@ -85,6 +85,7 @@ const emptyDatabase = () => ({ users: [], reports: [], activities: [], drafts: [
 let db = emptyDatabase();
 let sql;
 let pool;
+let dbRevision = '';
 let persistenceQueue = Promise.resolve();
 function normalizeDatabase(source) {
   const normalized = source && typeof source === 'object' ? source : emptyDatabase();
@@ -108,16 +109,17 @@ async function initializeDatabase() {
     await sql`CREATE TABLE IF NOT EXISTS camfed_report_state (id smallint PRIMARY KEY CHECK (id = 1), data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`;
     await pool.query('CREATE TABLE IF NOT EXISTS camfed_report_assets (id text PRIMARY KEY, content_type text NOT NULL, data bytea NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())');
   }
-  let rows = await sql`SELECT data FROM camfed_report_state WHERE id = 1`;
+  let rows = await sql`SELECT data, extract(epoch FROM updated_at)::text AS revision FROM camfed_report_state WHERE id = 1`;
   if (!rows.length && process.env.VERCEL && !fs.existsSync(dbFile)) throw new Error('Initialize Neon from the local records before serving Vercel requests.');
   if (!rows.length) {
     let initial = emptyDatabase();
     if (fs.existsSync(dbFile)) initial = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
     db = normalizeDatabase(initial).database;
     await persist();
-    rows = await sql`SELECT data FROM camfed_report_state WHERE id = 1`;
+    rows = await sql`SELECT data, extract(epoch FROM updated_at)::text AS revision FROM camfed_report_state WHERE id = 1`;
   }
   if (!rows.length) throw new Error('Neon did not return the application data row after initialization.');
+  dbRevision = rows[0].revision;
   const normalized = normalizeDatabase(rows[0].data);
   db = normalized.database;
   if (normalized.migratedReviews || databaseHasInlineAssets(db)) await persist();
@@ -151,7 +153,7 @@ function activityHistory(activity) {
   if (Array.isArray(activity.history)) return activity.history;
   const history = [{ type: 'created', at: activity.createdAt, actorName: 'System', details: 'Activity created.', deadline: activity.deadline }];
   for (const update of activity.updates || []) {
-    if (update.authorId && update.recipientId === update.authorId) history.push({ type: 'status_changed', at: update.createdAt, actorId: update.authorId, actorName: update.authorName, assigneeId: update.authorId, status: canonicalActivityStatus(update.status), details: update.text });
+    if (update.authorId && update.recipientId === update.authorId) history.push({ type: 'status_changed', at: update.createdAt, actorId: update.authorId, actorName: update.authorName, assigneeId: update.authorId, status: canonicalActivityStatus(update.status), progressPercent: update.progressPercent, details: update.text });
     if (update.review) history.push({ type: update.review.decision.toLowerCase(), at: update.review.reviewedAt, actorId: update.review.reviewedById, actorName: update.review.reviewedByName, assigneeId: update.authorId, details: update.review.feedback, deadline: update.review.deadline || '' });
   }
   return history.sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
@@ -223,7 +225,8 @@ function persist() {
         }
       }
     }
-    await sql`INSERT INTO camfed_report_state (id, data, updated_at) VALUES (1, ${serialized}::jsonb, now()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`;
+    const savedRows = await sql`INSERT INTO camfed_report_state (id, data, updated_at) VALUES (1, ${serialized}::jsonb, now()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now() RETURNING extract(epoch FROM updated_at)::text AS revision`;
+    if (savedRows.length) dbRevision = savedRows[0].revision;
   });
   return persistenceQueue;
 }
@@ -576,6 +579,7 @@ async function handleRequest(req, res) {
       const counts = Object.fromEntries([...new Set(unread.map(item => item.section))].map(section => [section, unread.filter(item => item.section === section).length]));
       return send(res, 200, { counts, total: unread.length, isLineManager: publicUser(user).isLineManager });
     }
+    if (req.method === 'GET' && url.pathname === '/api/changes') return send(res, 200, { revision: dbRevision });
     if (req.method === 'POST' && url.pathname === '/api/notifications/read') {
       const body = await readBody(req); const section = String(body.section || '');
       const validSections = ['weekly', 'reports', 'assigned', 'community', 'manager-reports', 'manager-activities', 'admin-users', 'admin-holidays'];
@@ -845,7 +849,7 @@ async function handleRequest(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/api/my/activities') {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
-      const activities = db.activities.filter(item => item.assigneeIds.includes(user.id)).map(item => ({ id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), status: canonicalActivityStatus(item.statusByUser?.[user.id]), history: activityHistory(item).filter(entry => !entry.assigneeId || entry.assigneeId === user.id), updates: item.updates.filter(update => update.authorId === user.id || update.recipientId === user.id).map(publicActivityUpdate) }));
+      const activities = db.activities.filter(item => item.assigneeIds.includes(user.id)).map(item => { const status = canonicalActivityStatus(item.statusByUser?.[user.id]); return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), status, progressPercent: Number.isFinite(item.progressPercentByUser?.[user.id]) ? item.progressPercentByUser[user.id] : status === 'Implemented' ? 100 : status === 'In Progress' || status === 'On Hold' ? 50 : 0, history: activityHistory(item).filter(entry => !entry.assigneeId || entry.assigneeId === user.id), updates: item.updates.filter(update => update.authorId === user.id || update.recipientId === user.id).map(publicActivityUpdate) }; });
       return send(res, 200, { activities });
     }
     const activityAttachmentMatch = url.pathname.match(/^\/api\/activities\/([\w-]+)\/attachments\/([\w-]+)$/);
@@ -865,15 +869,18 @@ async function handleRequest(req, res) {
       if (!activity) return send(res, 404, { error: 'Assigned activity not found.' });
       const body = await readBody(req, 70 * 1024 * 1024); const text = String(body.text || '').trim(); const requestedStatus = String(body.status || 'Started');
       const status = requestedStatus;
-      if (text.length > 5000 || !['Started', 'In Progress', 'Implemented', 'On Hold'].includes(status)) return send(res, 400, { error: 'Choose a valid status and keep the update to 5,000 characters or fewer.' });
+      const progressPercent = Number(body.progressPercent ?? (status === 'Implemented' ? 100 : status === 'In Progress' || status === 'On Hold' ? 50 : 0));
+      if (text.length > 5000 || !['Started', 'In Progress', 'Implemented', 'On Hold'].includes(status) || !Number.isInteger(progressPercent) || progressPercent < 0 || progressPercent > 100) return send(res, 400, { error: 'Choose a valid status and progress percentage from 0 to 100. Keep the update to 5,000 characters or fewer.' });
       let attachments; try { attachments = await activityAttachments(body.attachments || []); } catch (error) { return send(res, 400, { error: error.message }); }
+      if (progressPercent === 100 && !attachments.length && !activity.updates.some(update => update.authorId === user.id && update.attachments?.length)) return send(res, 400, { error: 'Attach at least one evidence file before reporting this activity as 100% complete.' });
       const updateText = text || `Status changed to ${status}.`;
       const previousStatus = canonicalActivityStatus(activity.statusByUser?.[user.id]);
-      activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: user.id, text: updateText, status, attachments, createdAt: new Date().toISOString() });
+      activity.updates.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: user.id, text: updateText, status, progressPercent, attachments, createdAt: new Date().toISOString() });
       activity.statusByUser = { ...(activity.statusByUser || {}), [user.id]: status };
-      recordActivityHistory(activity, { type: 'status_changed', actorId: user.id, actorName: user.fullName, assigneeId: user.id, previousStatus, status, details: updateText });
+      activity.progressPercentByUser = { ...(activity.progressPercentByUser || {}), [user.id]: progressPercent };
+      recordActivityHistory(activity, { type: 'status_changed', actorId: user.id, actorName: user.fullName, assigneeId: user.id, previousStatus, status, progressPercent, details: updateText });
       await persist();
-      await queueEmailNotifications(activityNotificationRecipients(activity, activity.assigneeIds), { type: 'Activity status update', subject: 'Activity update: ' + activity.title, description: `${updateText}\nStatus: ${status}\nDeadline: ${activity.deadline}`, actor: user.fullName, actorId: user.id, dashboard: 'manager-activities' });
+      await queueEmailNotifications(activityNotificationRecipients(activity, activity.assigneeIds), { type: 'Activity status update', subject: 'Activity update: ' + activity.title, description: `${updateText}\nStatus: ${status}\nProgress: ${progressPercent}%\nEvidence files: ${attachments.length}\nDeadline: ${activity.deadline}`, actor: user.fullName, actorId: user.id, dashboard: 'manager-activities' });
       return send(res, 201, { ok: true });
     }
     if (req.method === 'GET' && url.pathname === '/api/manager/activities') {
@@ -881,7 +888,7 @@ async function handleRequest(req, res) {
       const scope = activityScope(user);
       const activities = db.activities.filter(item => isSeniorUser(user) || (isHeadUser(user) ? canManageActivity(user, item, scope) : item.lineManagerId === user.id)).map(item => {
         const assigneeIds = item.assigneeIds.filter(id => scope.visibleIds.has(id));
-        return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, updatedAt: item.updatedAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), assigneeIds, assignees: assigneeIds.map(id => { const target = scope.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), statusByUser: Object.fromEntries(Object.entries(item.statusByUser || {}).filter(([id]) => scope.visibleIds.has(id)).map(([id, status]) => [id, canonicalActivityStatus(status)])), history: activityHistory(item).filter(entry => !entry.assigneeId || scope.visibleIds.has(entry.assigneeId)), updates: item.updates.filter(update => scope.visibleIds.has(update.authorId) || (update.recipientId && scope.visibleIds.has(update.recipientId))).map(publicActivityUpdate) };
+        return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, updatedAt: item.updatedAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), assigneeIds, assignees: assigneeIds.map(id => { const target = scope.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), statusByUser: Object.fromEntries(Object.entries(item.statusByUser || {}).filter(([id]) => scope.visibleIds.has(id)).map(([id, status]) => [id, canonicalActivityStatus(status)])), progressPercentByUser: Object.fromEntries(Object.entries(item.progressPercentByUser || {}).filter(([id]) => scope.visibleIds.has(id))), history: activityHistory(item).filter(entry => !entry.assigneeId || scope.visibleIds.has(entry.assigneeId)), updates: item.updates.filter(update => scope.visibleIds.has(update.authorId) || (update.recipientId && scope.visibleIds.has(update.recipientId))).map(publicActivityUpdate) };
       });
       return send(res, 200, { assignedUsers: scope.assignableUsers.map(item => ({ id: item.id, fullName: item.fullName, email: item.email })), activities });
     }

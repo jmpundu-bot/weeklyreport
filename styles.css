@@ -246,6 +246,32 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 @keyframes activity-progress-shimmer { to { transform: translateX(110%); } }
 .activity-progress label > span:first-of-type { color: var(--muted); font-size: 11px; font-weight: 500; }
 @media (prefers-reduced-motion: reduce) { .activity-progress-fill { transition: none; } .activity-progress-track::after { animation: none; transform: translateX(0); opacity: .12; } }
+.activity-monitor-dashboard { padding: 20px; margin: 0 0 18px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+.activity-monitor-heading { display: flex; justify-content: space-between; align-items: start; margin-bottom: 14px; }
+.activity-monitor-heading h3 { margin: 0; color: var(--ink); font-size: 20px; }
+.activity-monitor-heading p { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
+.activity-monitor-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.activity-monitor-stat { display: grid; gap: 4px; min-height: 78px; padding: 13px 16px; border-radius: 12px; }
+.activity-monitor-stat strong { font-size: 27px; line-height: 1; }
+.activity-monitor-stat span { color: var(--ink); font-size: 13px; font-weight: 600; }
+.stat-assigned { color: #3478e5; background: #eaf1fd; }
+.stat-completed { color: #128346; background: #e7f6ec; }
+.stat-progress { color: #ae7600; background: #fbf4df; }
+.stat-overdue { color: #ce3434; background: #fbeaea; }
+.activity-monitor-overall { margin-top: 18px; }
+.activity-monitor-overall > div { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 9px; }
+.activity-monitor-overall h4 { flex: 1 0 100%; margin: 0 0 2px; color: var(--ink); font-size: 15px; }
+.activity-monitor-overall strong { color: var(--green-dark); font-size: 21px; }
+.activity-monitor-overall > div > span { margin-left: auto; color: var(--muted); font-size: 12px; }
+.activity-monitor-track { display: block; width: 100%; height: 12px; overflow: hidden; border-radius: 999px; background: #eef0ef; }
+.activity-monitor-track > span { display: block; width: var(--progress-value, 0%); height: 100%; border-radius: inherit; background: #16a34a; transition: width .35s ease; }
+.activity-progress-control { min-width: 180px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px 10px; margin: 0; color: var(--green-dark); font-size: 12px; font-weight: 700; }
+.activity-progress-control output { color: var(--green-dark); font-size: 13px; font-weight: 800; }
+.activity-progress-control input { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--green); }
+.activity-evidence { margin: 10px 0; }
+.activity-evidence > strong { display: block; margin-bottom: 5px; color: var(--green-dark); font-size: 12px; }
+.activity-evidence > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.activity-evidence-empty { margin: 9px 0; color: var(--muted); font-size: 12px; }
 .activity-reply-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 10px; }
 .activity-reply-controls label { margin: 0; }
 .activity-reply-controls textarea { min-height: 58px; }
@@ -388,6 +414,9 @@ footer span { padding: 0 5px; color: var(--green); }
   .manager-report-card > header { flex-direction: column; }
   .manager-review-layout { grid-template-columns: 1fr; }
   .activity-reply-controls { grid-template-columns: 1fr; }
+  .activity-monitor-dashboard { padding: 16px; }
+  .activity-monitor-stats { gap: 8px; }
+  .activity-monitor-stat { min-height: 70px; padding: 11px 12px; }
   .days-grid, .details-grid { grid-template-columns: 1fr; }
   .day-card:last-child { grid-column: auto; }
   .day-fields { grid-template-columns: 1fr; }
