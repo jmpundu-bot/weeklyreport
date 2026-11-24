@@ -416,7 +416,7 @@ const canReviewReport = (user, report) => isSeniorUser(user) || (isHeadUser(user
 function activityScope(user) {
   const allUsers = db.users;
   const scopedUsers = allUsers;
-  const assignableUsers = allUsers.filter(item => item.active !== false);
+  const assignableUsers = allUsers;
   return { visibleIds: new Set(scopedUsers.map(item => item.id)), assignableIds: new Set(assignableUsers.map(item => item.id)), users: scopedUsers, assignableUsers };
 }
 const canOverseeActivities = user => user.role === 'admin' || isSeniorUser(user) || isHeadUser(user) || (user.role === 'user' && (db.users.some(item => item.role === 'user' && item.lineManagerId === user.id) || db.activities.some(item => item.lineManagerId === user.id)));
@@ -907,7 +907,14 @@ async function handleRequest(req, res) {
         const assigneeIds = item.assigneeIds.filter(id => scope.visibleIds.has(id));
         return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, updatedAt: item.updatedAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), assigneeIds, assignees: assigneeIds.map(id => { const target = scope.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), statusByUser: Object.fromEntries(Object.entries(item.statusByUser || {}).filter(([id]) => scope.visibleIds.has(id)).map(([id, status]) => [id, canonicalActivityStatus(status)])), progressPercentByUser: Object.fromEntries(Object.entries(item.progressPercentByUser || {}).filter(([id]) => scope.visibleIds.has(id))), history: activityHistory(item).filter(entry => !entry.assigneeId || scope.visibleIds.has(entry.assigneeId)), updates: item.updates.filter(update => scope.visibleIds.has(update.authorId) || (update.recipientId && scope.visibleIds.has(update.recipientId))).map(publicActivityUpdate) };
       });
-      return send(res, 200, { assignedUsers: scope.assignableUsers.map(item => ({ id: item.id, fullName: item.fullName, email: item.email })), activities });
+      return send(res, 200, { activities });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/manager/assignee-search') {
+      if (!canOverseeActivities(user)) return send(res, 403, { error: 'Activity assignment access required.' });
+      const query = String(url.searchParams.get('q') || '').trim().toLocaleLowerCase();
+      if (!query) return send(res, 200, { users: [] });
+      const users = activityScope(user).assignableUsers.filter(person => [person.fullName, person.username, person.email].some(value => String(value || '').toLocaleLowerCase().includes(query))).map(({ id, fullName, username, email, department, accountRole, active }) => ({ id, fullName, username: username || '', email, department, accountRole, active: active !== false }));
+      return send(res, 200, { users });
     }
     const managerActivityEditMatch = url.pathname.match(/^\/api\/manager\/activities\/([\w-]+)$/);
     if (req.method === 'PUT' && managerActivityEditMatch) {

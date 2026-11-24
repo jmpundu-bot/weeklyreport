@@ -674,6 +674,49 @@ function selectAllAssigneesMarkup(userCount) {
   const label = signedInUser?.accountRole === "head" ? `Select everyone in ${escapeHtml(signedInUser.department || "your department")}` : signedInUser?.accountRole === "senior_user" ? "Select all my direct reports" : signedInUser?.isLineManager ? "Select everyone assigned to me" : "";
   return label ? `<div class="assignee-bulk-actions"><button type="button" class="btn btn-secondary" data-select-all-assignees>${label}</button><button type="button" class="btn btn-secondary" data-clear-assignees>Clear selection</button></div>` : "";
 }
+function assigneePickerMarkup() {
+  return '<label class="assignee-search-label">Search all users<input type="search" data-assignee-search placeholder="Type a name or username" autocomplete="off"></label><div class="assignee-selected" data-assignee-selected></div><div class="assignee-results" data-assignee-results aria-live="polite"><p class="empty-reports">Type a name or username to search.</p></div>';
+}
+function renderAssigneeSelection(group, selected) {
+  const selectedNode = group.querySelector("[data-assignee-selected]");
+  if (!selectedNode) return;
+  selectedNode.innerHTML = [...selected.values()].map(person => `<span class="assignee-chip">${escapeHtml(person.fullName)} <button type="button" data-remove-assignee="${escapeHtml(person.id)}" aria-label="Remove ${escapeHtml(person.fullName)}">×</button><input type="hidden" name="assigneeIds" value="${escapeHtml(person.id)}"></span>`).join("");
+  selectedNode.querySelectorAll("[data-remove-assignee]").forEach(button => button.addEventListener("click", () => {
+    selected.delete(button.dataset.removeAssignee);
+    renderAssigneeSelection(group, selected);
+  }));
+}
+function bindAssigneePicker(group, initialUsers = []) {
+  const selected = new Map(initialUsers.map(person => [String(person.id), person]));
+  group._selectedAssignees = selected;
+  renderAssigneeSelection(group, selected);
+  const input = group.querySelector("[data-assignee-search]");
+  const results = group.querySelector("[data-assignee-results]");
+  let requestId = 0;
+  let timer;
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    const query = input.value.trim();
+    const currentRequest = ++requestId;
+    if (!query) { results.innerHTML = '<p class="empty-reports">Type a name or username to search.</p>'; return; }
+    results.innerHTML = '<p class="empty-reports">Searching users…</p>';
+    timer = setTimeout(async () => {
+      try {
+        const { users } = await api(`/api/manager/assignee-search?q=${encodeURIComponent(query)}`);
+        if (currentRequest !== requestId) return;
+        results.innerHTML = users.map(person => `<label class="assignee-option"><input type="checkbox" data-search-assignee="${escapeHtml(person.id)}" ${selected.has(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml([person.email || person.username, person.department, person.accountRole === "senior_user" ? "Senior" : person.accountRole === "head" ? "Head" : person.accountRole === "user" ? "User" : "Administrator", person.active ? "" : "Inactive"].filter(Boolean).join(" · "))}</span></label>`).join("") || '<p class="empty-reports">No matching users found.</p>';
+        results.querySelectorAll("[data-search-assignee]").forEach(checkbox => checkbox.addEventListener("change", () => {
+          const person = users.find(item => item.id === checkbox.dataset.searchAssignee);
+          if (!person) return;
+          if (checkbox.checked) selected.set(person.id, person); else selected.delete(person.id);
+          renderAssigneeSelection(group, selected);
+        }));
+      } catch (error) {
+        if (currentRequest === requestId) results.innerHTML = `<p class="empty-reports">${escapeHtml(error.message)}</p>`;
+      }
+    }, 180);
+  });
+}
 function bindBulkAssigneeActions(root) {
   root.querySelectorAll("[data-assignee-search]").forEach(input => input.addEventListener("input", () => {
     const query = input.value.trim().toLocaleLowerCase();
@@ -952,22 +995,24 @@ async function loadManagerActivities(prefix) {
   const list = document.getElementById(admin ? "adminActivities" : "managerActivities");
   const messageNode = document.getElementById(admin ? "adminActivityMessage" : "managerActivityMessage");
   try {
-    const { assignedUsers, activities } = await api("/api/manager/activities");
+    const { activities } = await api("/api/manager/activities");
+    const assignedUsers = [];
     clearTimeout(managerActivityRetryTimer);
     managerActivityRetryTimer = null;
     if (messageNode.dataset.retryNotice) { messageNode.textContent = ""; messageNode.className = "form-message"; delete messageNode.dataset.retryNotice; }
     activities.splice(0, activities.length, ...newestFirst(activities, item => newestFirst(item.updates)[0]?.createdAt || item.updatedAt || item.createdAt));
     const monitorEntries = activities.flatMap(activity => activity.assigneeIds.map(id => ({ deadline: activity.deadline, progress: monitoringProgress(activity.statusByUser?.[id], activity.progressPercentByUser?.[id]) })));
     const openStates = activityCardOpenStates(list);
-    const selectedAssigneeIds = new Set([...usersNode.querySelectorAll('input[name="assigneeIds"]:checked')].map(input => input.value));
-    const savedSelectAllMode = usersNode.dataset.selectAllMode;
-    const selectAllMode = savedSelectAllMode === undefined ? Boolean(signedInUser?.isLineManager && signedInUser.accountRole !== "head") : savedSelectAllMode === "true";
-    usersNode.innerHTML = (assignedUsers.length ? '<label class="assignee-search-label">Search all users<input type="search" data-assignee-search placeholder="Type a name or username" autocomplete="off"></label>' : "") + selectAllAssigneesMarkup(assignedUsers.length) + (assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}">${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("") || '<p class="empty-reports">No active users are available.</p>');
-    usersNode.dataset.selectAllMode = String(selectAllMode);
-    usersNode.querySelectorAll('input[name="assigneeIds"]').forEach(input => { input.checked = selectAllMode || selectedAssigneeIds.has(input.value); });
-    bindBulkAssigneeActions(usersNode);
+    const selectedAssignees = usersNode._selectedAssignees ? [...usersNode._selectedAssignees.values()] : [];
+    usersNode.innerHTML = assigneePickerMarkup();
+    bindAssigneePicker(usersNode, selectedAssignees);
     list.innerHTML = activityMonitoringDashboard(monitorEntries, "Assignments across all departments") + activities.map(activity => `<article class="manager-report-card activity-card" data-activity-id="${escapeHtml(activity.id)}"><header><div><h3>${escapeHtml(activity.title)}</h3><p>Deadline ${escapeHtml(activity.deadline)} · Assigned to ${activity.assignees.map(item => escapeHtml(item.fullName)).join(", ")}</p></div><span class="report-date">Created ${escapeHtml(new Date(activity.createdAt).toLocaleDateString())}</span></header>${activityProgressMarkup(activity, activity.assigneeIds.length ? activity.assigneeIds.reduce((sum, id) => sum + monitoringProgress(activity.statusByUser?.[id], activity.progressPercentByUser?.[id]), 0) / activity.assigneeIds.length : 0, "Team implementation progress")}<button type="button" class="btn btn-secondary" data-download-activity-report="${escapeHtml(activity.id)}">Download detailed PDF report</button><details class="activity-edit-details"><summary>Edit activity details</summary><form class="activity-edit-form" data-update-activity="${escapeHtml(activity.id)}"><label>Activity title<input name="title" maxlength="200" value="${escapeHtml(activity.title)}" required></label><label>Instructions<textarea name="description" maxlength="5000" required>${escapeHtml(activity.description)}</textarea></label><label>Deadline<input name="deadline" type="date" value="${escapeHtml(activity.deadline)}" required></label>${activityAttachmentsMarkup(activity)}<label>Replace or add documents <span class="field-hint">Current files stay attached; select additional files</span><input name="attachments" type="file" multiple></label><fieldset><legend>Assigned users</legend><div class="assignee-options"><label class="assignee-search-label">Search all users<input type="search" data-assignee-search placeholder="Type a name or username" autocomplete="off"></label>${selectAllAssigneesMarkup(assignedUsers.length)}${assignedUsers.map(person => `<label class="assignee-option"><input type="checkbox" name="assigneeIds" value="${escapeHtml(person.id)}" ${activity.assigneeIds.includes(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml(person.email)}</span></label>`).join("")}</div></fieldset><input type="hidden" name="previousDeadline" value="${escapeHtml(activity.deadline)}"><button class="btn btn-secondary" type="submit">Save activity changes</button></form></details><p class="activity-description">${escapeHtml(activity.description)}</p>${activityAttachmentsMarkup(activity)}${activity.assignees.map(person => { const updates = activity.updates.filter(update => update.authorId === person.id || update.recipientId === person.id); const personalUpdates = updates.filter(update => update.authorId === person.id); const status = normalizeActivityStatus(activity.statusByUser?.[person.id]); const progress = monitoringProgress(status, activity.progressPercentByUser?.[person.id]); const state = deadlineState(activity.deadline, progress >= 100); return `<div class="assignee-progress"><h4>${escapeHtml(person.fullName)} · ${escapeHtml(status)} · ${progress}% · <span class="deadline-indicator" style="--deadline-indicator-color:${deadlineIndicatorColor(activity.deadline, progress >= 100)}">${escapeHtml(state)}</span></h4>${activityProgressMarkup(activity, progress, "Implementation progress")}${activityEvidenceMarkup(personalUpdates, activity.id)}${activityUpdatesMarkup(updates, activity.id)}${activityReviewMarkup(activity, person, updates)}<div class="activity-reply-controls"><label>Reply to ${escapeHtml(person.fullName)}<textarea data-manager-reply="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" maxlength="5000" placeholder="Write guidance or a reply..."></textarea></label><label>Attach documents<input data-manager-files="${escapeHtml(activity.id)}-${escapeHtml(person.id)}" type="file" multiple></label><button type="button" class="btn btn-secondary" data-send-manager-reply="${escapeHtml(activity.id)}" data-reply-user="${escapeHtml(person.id)}">Send reply</button></div></div>`; }).join("")}</article>`).join("") || '<p class="empty-reports">No activities in your oversight scope yet.</p>';
-    bindBulkAssigneeActions(list);
+    list.querySelectorAll(".activity-edit-form").forEach(editForm => {
+      const activity = activities.find(item => item.id === editForm.dataset.updateActivity);
+      const picker = editForm.querySelector(".assignee-options");
+      picker.innerHTML = assigneePickerMarkup();
+      bindAssigneePicker(picker, activity?.assignees || []);
+    });
     bindActivityHistoryDownloads(list, activities, messageNode);
     collapseActivityCards(list, openStates);
     list.querySelectorAll("[data-update-activity]").forEach(editForm => editForm.addEventListener("submit", async event => {
@@ -993,7 +1038,7 @@ async function loadManagerActivities(prefix) {
     }));
     form.onsubmit = async event => {
       event.preventDefault(); const data = new FormData(form); const assigneeIds = data.getAll("assigneeIds");
-      try { const files = [...(form.elements.attachments.files || [])]; if (files.length > 10 || files.reduce((sum, file) => sum + file.size, 0) > 50 * 1024 * 1024) throw new Error("Attach up to ten files with a combined size no larger than 50 MB."); const attachments = await readActivityFiles(files); await api("/api/manager/activities", { method: "POST", body: JSON.stringify({ title: data.get("title"), description: data.get("description"), deadline: data.get("deadline"), assigneeIds, attachments }) }); form.reset(); delete usersNode.dataset.selectAllMode; showMessage(messageNode, "Activity assigned successfully.", "success"); await loadManagerActivities(prefix); }
+      try { const files = [...(form.elements.attachments.files || [])]; if (files.length > 10 || files.reduce((sum, file) => sum + file.size, 0) > 50 * 1024 * 1024) throw new Error("Attach up to ten files with a combined size no larger than 50 MB."); const attachments = await readActivityFiles(files); await api("/api/manager/activities", { method: "POST", body: JSON.stringify({ title: data.get("title"), description: data.get("description"), deadline: data.get("deadline"), assigneeIds, attachments }) }); form.reset(); usersNode._selectedAssignees?.clear(); showMessage(messageNode, "Activity assigned successfully.", "success"); await loadManagerActivities(prefix); }
       catch (error) { showMessage(messageNode, error.message); }
     };
   } catch (error) { handleManagerActivitiesLoadError(prefix, messageNode, error); }
