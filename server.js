@@ -413,12 +413,20 @@ function publicUser(user) {
 }
 const isSeniorUser = user => user.role === 'user' && user.accountRole === 'senior_user';
 const isHeadUser = user => user.role === 'user' && user.accountRole === 'head';
+function activityHierarchyRank(user) {
+  if (user.role === 'admin') return 4;
+  if (isSeniorUser(user)) return 3;
+  if (isHeadUser(user)) return 2;
+  const isLineManager = db.users.some(item => item.role === 'user' && item.lineManagerId === user.id) || db.reports.some(report => report.lineManagerId === user.id) || db.activities.some(activity => activity.lineManagerId === user.id);
+  return isLineManager ? 1 : 0;
+}
+const canAssignActivityTo = (actor, target) => actor.role === 'admin' || activityHierarchyRank(actor) > activityHierarchyRank(target);
 const reportDepartment = report => report.staff?.department || db.users.find(item => item.id === report.userId)?.department || '';
 const canReviewReport = (user, report) => isSeniorUser(user) || (isHeadUser(user) ? Boolean(user.department) && reportDepartment(report) === user.department : report.lineManagerId === user.id);
 function activityScope(user) {
   const allUsers = db.users;
   const scopedUsers = allUsers;
-  const assignableUsers = allUsers;
+  const assignableUsers = allUsers.filter(target => canAssignActivityTo(user, target));
   return { visibleIds: new Set(scopedUsers.map(item => item.id)), assignableIds: new Set(assignableUsers.map(item => item.id)), users: scopedUsers, assignableUsers };
 }
 const canOverseeActivities = user => user.role === 'admin' || isSeniorUser(user) || isHeadUser(user) || (user.role === 'user' && (db.users.some(item => item.role === 'user' && item.lineManagerId === user.id) || db.activities.some(item => item.lineManagerId === user.id)));
@@ -915,7 +923,8 @@ async function handleRequest(req, res) {
       if (!canOverseeActivities(user)) return send(res, 403, { error: 'Activity assignment access required.' });
       const query = String(url.searchParams.get('q') || '').trim().toLocaleLowerCase();
       if (!query) return send(res, 200, { users: [] });
-      const users = activityScope(user).assignableUsers.filter(person => [person.fullName, person.username, person.email].some(value => String(value || '').toLocaleLowerCase().includes(query))).map(({ id, fullName, username, email, department, accountRole, active }) => ({ id, fullName, username: username || '', email, department, accountRole, active: active !== false }));
+      const scope = activityScope(user);
+      const users = scope.users.filter(person => [person.fullName, person.username, person.email].some(value => String(value || '').toLocaleLowerCase().includes(query))).map(({ id, fullName, username, email, department, accountRole, active }) => ({ id, fullName, username: username || '', email, department, accountRole, active: active !== false, assignable: scope.assignableIds.has(id) }));
       return send(res, 200, { users });
     }
     const managerActivityEditMatch = url.pathname.match(/^\/api\/manager\/activities\/([\w-]+)$/);
@@ -928,12 +937,11 @@ async function handleRequest(req, res) {
       const title = String(body.title || '').trim(); const description = String(body.description || '').trim(); const deadline = String(body.deadline || '');
       const previousAssigneeIds = [...activity.assigneeIds];
       const previousTitle = activity.title; const previousDescription = activity.description; const previousDeadline = activity.deadline;
-      const selectedIds = [...new Set(Array.isArray(body.assigneeIds) ? body.assigneeIds.map(String) : previousAssigneeIds.filter(id => scope.assignableIds.has(id)))];
-      const retainedIds = isSeniorUser(user) || isHeadUser(user) ? previousAssigneeIds.filter(id => !scope.assignableIds.has(id)) : [];
-      const assigneeIds = [...new Set([...selectedIds, ...retainedIds])];
-      const hasValidAssigneeSelection = selectedIds.length > 0 || (isSeniorUser(user) && retainedIds.length > 0);
+      const selectedIds = [...new Set(Array.isArray(body.assigneeIds) ? body.assigneeIds.map(String) : previousAssigneeIds)];
+      const assigneeIds = selectedIds;
+      const hasValidAssigneeSelection = selectedIds.length > 0;
       const dateValid = /^\d{4}-\d{2}-\d{2}$/.test(deadline) && !Number.isNaN(Date.parse(deadline + 'T00:00:00Z')) && new Date(deadline + 'T00:00:00Z').toISOString().slice(0, 10) === deadline;
-      if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !hasValidAssigneeSelection || selectedIds.some(id => !scope.assignableIds.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select active users within your assignment scope.' });
+      if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !hasValidAssigneeSelection || selectedIds.some(id => !scope.visibleIds.has(id) || (!scope.assignableIds.has(id) && !previousAssigneeIds.includes(id)))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select users permitted by your role hierarchy.' });
       const assignmentChanged = previousAssigneeIds.length !== assigneeIds.length || previousAssigneeIds.some(id => !assigneeIds.includes(id));
       let attachments;
       try { attachments = await activityAttachments(body.attachments || (activity.attachments || []).map(({ id }) => ({ id })), activity.attachments || []); }
@@ -950,7 +958,12 @@ async function handleRequest(req, res) {
       await persist();
       const affectedIds = new Set([...previousAssigneeIds, ...assigneeIds]);
       const recipients = db.users.filter(person => affectedIds.has(person.id) && person.active !== false);
-      await queueEmailNotifications([...recipients, ...activityNotificationRecipients(activity, [...previousAssigneeIds, ...assigneeIds])], { type: 'Deadline Activity Changed', subject: 'Activity updated: ' + title, description: person => (previousAssigneeIds.includes(person.id) || assigneeIds.includes(person.id) ? (assigneeIds.includes(person.id) ? 'You are assigned to this activity.' : 'You were removed from this activity.') : 'This activity within your supervisory scope has changed.') + '\nActivity: ' + title + '\n' + description + '\nPrevious deadline: ' + previousDeadline + '\nNew deadline: ' + deadline, actor: user.fullName, actorId: user.id, dashboard: 'assigned' });
+      const newCrossDepartmentAssignees = assigneeIds.map(id => db.users.find(person => person.id === id)).filter(person => person && !previousAssigneeIds.includes(person.id) && user.department && person.department && person.department !== user.department);
+      await queueEmailNotifications([...recipients, ...activityNotificationRecipients(activity, [...previousAssigneeIds, ...assigneeIds])], { type: 'Deadline Activity Changed', subject: 'Activity updated: ' + title, description: person => {
+        const directReport = newCrossDepartmentAssignees.filter(assignee => assignee.lineManagerId === person.id);
+        if (directReport.length) return `A cross-department activity was assigned to your direct report${directReport.length === 1 ? '' : 's'}: ${directReport.map(assignee => `${assignee.fullName} (${assignee.department})`).join(', ')}.\nAssigned by: ${user.fullName} (${user.department}).\nActivity: ${title}\n${description}\nDeadline: ${deadline}`;
+        return (previousAssigneeIds.includes(person.id) || assigneeIds.includes(person.id) ? (assigneeIds.includes(person.id) ? 'You are assigned to this activity.' : 'You were removed from this activity.') : 'This activity within your supervisory scope has changed.') + '\nActivity: ' + title + '\n' + description + '\nPrevious deadline: ' + previousDeadline + '\nNew deadline: ' + deadline;
+      }, actor: user.fullName, actorId: user.id, dashboard: 'assigned' });
       return send(res, 200, { activity });
     }
     const managerActivityReviewMatch = url.pathname.match(/^\/api\/manager\/activities\/([\w-]+)\/assignees\/([\w-]+)\/reviews$/);
@@ -1006,14 +1019,20 @@ async function handleRequest(req, res) {
       const body = await readBody(req, 70 * 1024 * 1024); const title = String(body.title || '').trim(); const description = String(body.description || '').trim(); const deadline = String(body.deadline || '');
       const assigneeIds = [...new Set(Array.isArray(body.assigneeIds) ? body.assigneeIds.map(String) : [])];
       const dateValid = /^\d{4}-\d{2}-\d{2}$/.test(deadline) && !Number.isNaN(Date.parse(`${deadline}T00:00:00Z`)) && new Date(`${deadline}T00:00:00Z`).toISOString().slice(0, 10) === deadline;
-      if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !assigneeIds.length || assigneeIds.some(id => !scope.assignableIds.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select active users within your oversight scope.' });
+      if (!title || title.length > 200 || !description || description.length > 5000 || !dateValid || !assigneeIds.length || assigneeIds.some(id => !scope.assignableIds.has(id))) return send(res, 400, { error: 'Enter a title, description, valid deadline, and select users permitted by your role hierarchy.' });
       let attachments;
       try { attachments = await activityAttachments(body.attachments || []); }
       catch (error) { return send(res, 400, { error: error.message }); }
       const createdAt = new Date().toISOString();
       const activity = { id: crypto.randomUUID(), lineManagerId: user.id, title, description, deadline, assigneeIds, attachments, statusByUser: {}, updates: [], createdAt, history: [{ id: crypto.randomUUID(), type: 'created', at: createdAt, actorId: user.id, actorName: user.fullName, details: 'Activity created and assigned to ' + assigneeIds.map(id => db.users.find(person => person.id === id)?.fullName || 'Unknown user').join(', ') + '.', deadline }] };
       db.activities.push(activity); await persist();
-      await queueEmailNotifications(activityNotificationRecipients(activity), { type: 'Deadline Activity Assigned', subject: 'New activity: ' + title, description: description + '\nDeadline: ' + deadline, actor: user.fullName, actorId: user.id, dashboard: 'assigned' });
+      const assignedPeople = assigneeIds.map(id => db.users.find(person => person.id === id)).filter(Boolean);
+      const crossDepartmentAssignees = assignedPeople.filter(person => user.department && person.department && person.department !== user.department);
+      await queueEmailNotifications(activityNotificationRecipients(activity), { type: 'Deadline Activity Assigned', subject: 'New activity: ' + title, description: person => {
+        const directReport = crossDepartmentAssignees.filter(assignee => assignee.lineManagerId === person.id);
+        if (directReport.length) return `A cross-department activity was assigned to your direct report${directReport.length === 1 ? '' : 's'}: ${directReport.map(assignee => `${assignee.fullName} (${assignee.department})`).join(', ')}.\nAssigned by: ${user.fullName} (${user.department}).\nActivity: ${title}\n${description}\nDeadline: ${deadline}`;
+        return `Assigned to: ${assignedPeople.map(assignee => `${assignee.fullName} (${assignee.department})`).join(', ')}\n${description}\nDeadline: ${deadline}`;
+      }, actor: user.fullName, actorId: user.id, dashboard: 'assigned' });
       return send(res, 201, { activity });
     }
     if (req.method === 'GET' && url.pathname === '/api/manager/reports') {
