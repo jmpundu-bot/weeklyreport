@@ -209,6 +209,9 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .assignee-results, .assignee-selected { grid-column: 1 / -1; }
 .assignee-chip { display: inline-flex; align-items: center; gap: 6px; margin: 0 6px 6px 0; padding: 6px 9px; border-radius: 999px; background: #edf5ef; color: var(--green-dark); font-size: 12px; }
 .assignee-chip button { border: 0; padding: 0 2px; background: transparent; color: inherit; font-size: 16px; cursor: pointer; }
+.activity-origin-badge { display: inline-block; margin-left: 6px; padding: 3px 8px; border-radius: 999px; vertical-align: middle; font-size: 10px; font-weight: 700; line-height: 1.4; }
+.activity-origin-badge.is-committee { background: #e8efff; color: #284c92; }
+.activity-origin-badge.is-individual { background: #edf5ef; color: var(--green-dark); }
 .assignee-option[hidden] { display: none; }
 .assignee-bulk-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
 .assignee-option { display: flex; align-items: center; gap: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }

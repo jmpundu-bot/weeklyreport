@@ -435,6 +435,12 @@ function canManageActivity(user, activity, scope = activityScope(user)) {
   if (isHeadUser(user)) return activity.assigneeIds.some(id => scope.visibleIds.has(id));
   return activity.lineManagerId === user.id;
 }
+function activityAssignmentDetails(activity) {
+  const assigner = db.users.find(person => person.id === activity.lineManagerId);
+  const committee = activity.assignmentType === 'committee' || (isSeniorUser(assigner) && activity.assigneeIds.length > 1);
+  const originLabel = committee ? 'Committee activity' : isSeniorUser(assigner) ? 'Senior assignment' : isHeadUser(assigner) ? 'Head of Department assignment' : assigner?.role === 'admin' ? 'Administrator assignment' : 'Line Manager assignment';
+  return { assignmentType: committee ? 'committee' : 'individual', originLabel, assignedByName: assigner?.fullName || 'Former user' };
+}
 function activeRecipients(ids) {
   const recipientIds = new Set((ids || []).filter(Boolean));
   return db.users.filter(person => recipientIds.has(person.id) && person.active !== false);
@@ -880,7 +886,7 @@ async function handleRequest(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/api/my/activities') {
       if (user.role !== 'user') return send(res, 403, { error: 'User dashboard access required.' });
-      const activities = db.activities.filter(item => item.assigneeIds.includes(user.id)).map(item => { const status = canonicalActivityStatus(item.statusByUser?.[user.id]); return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), status, progressPercent: Number.isFinite(item.progressPercentByUser?.[user.id]) ? item.progressPercentByUser[user.id] : status === 'Implemented' ? 100 : status === 'In Progress' || status === 'On Hold' ? 50 : 0, history: activityHistory(item).filter(entry => !entry.assigneeId || entry.assigneeId === user.id), updates: item.updates.filter(update => update.authorId === user.id || update.recipientId === user.id).map(publicActivityUpdate) }; });
+      const activities = db.activities.filter(item => item.assigneeIds.includes(user.id)).map(item => { const status = canonicalActivityStatus(item.statusByUser?.[user.id]); return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, ...activityAssignmentDetails(item), attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), status, progressPercent: Number.isFinite(item.progressPercentByUser?.[user.id]) ? item.progressPercentByUser[user.id] : status === 'Implemented' ? 100 : status === 'In Progress' || status === 'On Hold' ? 50 : 0, history: activityHistory(item).filter(entry => !entry.assigneeId || entry.assigneeId === user.id), updates: item.updates.filter(update => update.authorId === user.id || update.recipientId === user.id).map(publicActivityUpdate) }; });
       return send(res, 200, { activities });
     }
     const activityAttachmentMatch = url.pathname.match(/^\/api\/activities\/([\w-]+)\/attachments\/([\w-]+)$/);
@@ -919,7 +925,7 @@ async function handleRequest(req, res) {
       const scope = activityScope(user);
       const activities = db.activities.filter(item => isSeniorUser(user) || (isHeadUser(user) ? canManageActivity(user, item, scope) : item.lineManagerId === user.id)).map(item => {
         const assigneeIds = item.assigneeIds.filter(id => scope.visibleIds.has(id));
-        return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, updatedAt: item.updatedAt, attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), assigneeIds, assignees: assigneeIds.map(id => { const target = scope.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), statusByUser: Object.fromEntries(Object.entries(item.statusByUser || {}).filter(([id]) => scope.visibleIds.has(id)).map(([id, status]) => [id, canonicalActivityStatus(status)])), progressPercentByUser: Object.fromEntries(Object.entries(item.progressPercentByUser || {}).filter(([id]) => scope.visibleIds.has(id))), history: activityHistory(item).filter(entry => !entry.assigneeId || scope.visibleIds.has(entry.assigneeId)), updates: item.updates.filter(update => scope.visibleIds.has(update.authorId) || (update.recipientId && scope.visibleIds.has(update.recipientId))).map(publicActivityUpdate) };
+        return { id: item.id, title: item.title, description: item.description, deadline: item.deadline, createdAt: item.createdAt, updatedAt: item.updatedAt, ...activityAssignmentDetails(item), attachments: (item.attachments || []).map(({ id, name, mimeType }) => ({ id, name, mimeType })), assigneeIds, assignees: assigneeIds.map(id => { const target = scope.users.find(account => account.id === id); return target ? { id, fullName: target.fullName } : null; }).filter(Boolean), statusByUser: Object.fromEntries(Object.entries(item.statusByUser || {}).filter(([id]) => scope.visibleIds.has(id)).map(([id, status]) => [id, canonicalActivityStatus(status)])), progressPercentByUser: Object.fromEntries(Object.entries(item.progressPercentByUser || {}).filter(([id]) => scope.visibleIds.has(id))), history: activityHistory(item).filter(entry => !entry.assigneeId || scope.visibleIds.has(entry.assigneeId)), updates: item.updates.filter(update => scope.visibleIds.has(update.authorId) || (update.recipientId && scope.visibleIds.has(update.recipientId))).map(publicActivityUpdate) };
       });
       return send(res, 200, { activities });
     }
@@ -1028,7 +1034,7 @@ async function handleRequest(req, res) {
       try { attachments = await activityAttachments(body.attachments || []); }
       catch (error) { return send(res, 400, { error: error.message }); }
       const createdAt = new Date().toISOString();
-      const activity = { id: crypto.randomUUID(), lineManagerId: user.id, title, description, deadline, assigneeIds, attachments, statusByUser: {}, updates: [], createdAt, history: [{ id: crypto.randomUUID(), type: 'created', at: createdAt, actorId: user.id, actorName: user.fullName, details: 'Activity created and assigned to ' + assigneeIds.map(id => db.users.find(person => person.id === id)?.fullName || 'Unknown user').join(', ') + '.', deadline }] };
+      const activity = { id: crypto.randomUUID(), lineManagerId: user.id, ...(isSeniorUser(user) && assigneeIds.length > 1 ? { assignmentType: 'committee' } : {}), title, description, deadline, assigneeIds, attachments, statusByUser: {}, updates: [], createdAt, history: [{ id: crypto.randomUUID(), type: 'created', at: createdAt, actorId: user.id, actorName: user.fullName, details: 'Activity created and assigned to ' + assigneeIds.map(id => db.users.find(person => person.id === id)?.fullName || 'Unknown user').join(', ') + '.', deadline }] };
       db.activities.push(activity); await persist();
       const assignedPeople = assigneeIds.map(id => db.users.find(person => person.id === id)).filter(Boolean);
       const crossDepartmentAssignees = assignedPeople.filter(person => !user.department || !person.department || person.department !== user.department);
