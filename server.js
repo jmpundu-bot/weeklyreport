@@ -384,12 +384,13 @@ async function queueEmailNotifications(recipients, notice) {
     }
     return [];
   }
-  const unique = [...new Map((recipients || []).filter(person => person && person.id !== notice.actorId && person.active !== false).map(person => {
+  const unique = [...new Map((recipients || []).filter(person => person && person.id !== notice.actorId && (notice.includeInactive || person.active !== false)).map(person => {
     const notificationEmail = String(person.email || '').trim().toLowerCase();
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notificationEmail) ? [notificationEmail, { ...person, notificationEmail }] : null;
   }).filter(Boolean)).values()];
   if (!unique.length) return [];
-  const makeBody = person => [notice.type, '', typeof notice.description === 'function' ? notice.description(person) : notice.description, '', 'Responsible: ' + notice.actor, '', 'Open this section: ' + dashboardLink(notice.dashboard)].join('\n');
+  const occurredAt = notice.occurredAt || new Date().toISOString();
+  const makeBody = person => [notice.type, '', typeof notice.description === 'function' ? notice.description(person) : notice.description, '', 'Responsible: ' + notice.actor, 'Time: ' + occurredAt, '', 'Open this section: ' + dashboardLink(notice.dashboard)].join('\n');
   const delivered = [];
   for (let index = 0; index < unique.length; index += 4) {
     const batch = unique.slice(index, index + 4);
@@ -413,15 +414,15 @@ const isHeadUser = user => user.role === 'user' && user.accountRole === 'head';
 const reportDepartment = report => report.staff?.department || db.users.find(item => item.id === report.userId)?.department || '';
 const canReviewReport = (user, report) => isSeniorUser(user) || (isHeadUser(user) ? Boolean(user.department) && reportDepartment(report) === user.department : report.lineManagerId === user.id);
 function activityScope(user) {
-  const allUsers = db.users.filter(item => item.role === 'user');
-  const scopedUsers = isSeniorUser(user) ? allUsers : isHeadUser(user) ? (user.department ? allUsers.filter(item => item.department === user.department) : []) : allUsers.filter(item => item.lineManagerId === user.id && item.active !== false);
-  const assignableUsers = isHeadUser(user) ? scopedUsers.filter(item => item.active !== false) : scopedUsers.filter(item => item.active !== false && item.lineManagerId === user.id);
+  const allUsers = db.users;
+  const scopedUsers = allUsers;
+  const assignableUsers = allUsers.filter(item => item.active !== false);
   return { visibleIds: new Set(scopedUsers.map(item => item.id)), assignableIds: new Set(assignableUsers.map(item => item.id)), users: scopedUsers, assignableUsers };
 }
-const canOverseeActivities = user => user.role === 'admin' || isSeniorUser(user) || (isHeadUser(user) && Boolean(user.department)) || (user.role === 'user' && (db.users.some(item => item.role === 'user' && item.lineManagerId === user.id) || db.activities.some(item => item.lineManagerId === user.id)));
+const canOverseeActivities = user => user.role === 'admin' || isSeniorUser(user) || isHeadUser(user) || (user.role === 'user' && (db.users.some(item => item.role === 'user' && item.lineManagerId === user.id) || db.activities.some(item => item.lineManagerId === user.id)));
 function canManageActivity(user, activity, scope = activityScope(user)) {
   if (isSeniorUser(user)) return true;
-  if (isHeadUser(user)) return Boolean(user.department) && activity.assigneeIds.some(id => scope.visibleIds.has(id));
+  if (isHeadUser(user)) return activity.assigneeIds.some(id => scope.visibleIds.has(id));
   return activity.lineManagerId === user.id;
 }
 function activeRecipients(ids) {
@@ -781,31 +782,47 @@ async function handleRequest(req, res) {
         if (!lineManagerId) return send(res, 400, { error: 'Assign a Line Manager before creating this account.' });
         if (!db.users.some(item => item.id === lineManagerId && ['user', 'admin'].includes(item.role) && item.active !== false)) return send(res, 400, { error: 'Select an active account as Line Manager.' });
         const created = { id: crypto.randomUUID(), role: 'user', accountRole, email, fullName: String(body.fullName || '').trim(), department, designation: String(body.designation || '').trim(), lineManagerId, active: true, password: await hashPassword(password) };
-        db.users.push(created); await persist(); return send(res, 201, { user: publicUser(created) });
+        db.users.push(created); await persist();
+        const manager = db.users.find(item => item.id === lineManagerId);
+        await queueEmailNotifications([created, manager], { type: 'Account created', subject: 'Your CAMFED portal account is ready', description: `An account was created for ${created.fullName} (${created.email}) in ${created.department} as ${created.accountRole === 'senior_user' ? 'Senior' : created.accountRole === 'head' ? 'Head' : 'User'}.`, actor: user.fullName, actorId: user.id, dashboard: 'weekly' });
+        return send(res, 201, { user: publicUser(created) });
       }
       const match = url.pathname.match(/^\/api\/admin\/users\/([\w-]+)$/);
       if (match) {
         const target = db.users.find(item => item.id === match[1] && item.role === 'user'); if (!target) return send(res, 404, { error: 'User not found.' });
         if (req.method === 'PUT') {
           const body = await readBody(req); const email = String(body.email || target.email).trim().toLowerCase();
+          const before = { fullName: target.fullName, email: target.email, department: target.department, designation: target.designation, lineManagerId: target.lineManagerId, accountRole: target.accountRole, active: target.active };
           if (db.users.some(item => item.id !== target.id && item.email === email)) return send(res, 400, { error: 'That email is already in use.' });
           if (body.department !== undefined && !departments.includes(body.department)) return send(res, 400, { error: 'Select a valid department.' });
+          if (body.accountRole !== undefined && !['user', 'senior_user', 'head'].includes(body.accountRole)) return send(res, 400, { error: 'Select User, Senior, or Head.' });
           if (body.lineManagerId !== undefined) {
             const lineManagerId = String(body.lineManagerId || '').trim() || null;
             if (!lineManagerId) return send(res, 400, { error: 'Assign a Line Manager to this account.' });
             if (lineManagerId === target.id || !db.users.some(item => item.id === lineManagerId && ['user', 'admin'].includes(item.role) && item.active !== false)) return send(res, 400, { error: 'Select another active account as Line Manager.' });
             target.lineManagerId = lineManagerId;
           }
-          target.email = email; target.fullName = String(body.fullName ?? target.fullName).trim(); target.department = String(body.department ?? target.department); target.designation = String(body.designation ?? target.designation);
+          target.email = email; target.fullName = String(body.fullName ?? target.fullName).trim(); target.department = String(body.department ?? target.department); target.designation = String(body.designation ?? target.designation); target.accountRole = String(body.accountRole ?? target.accountRole ?? 'user');
           if (body.password) { if (String(body.password).length < 10) return send(res, 400, { error: 'Password must have at least 10 characters.' }); target.password = await hashPassword(String(body.password)); }
-          if (body.active !== undefined) target.active = Boolean(body.active); await persist(); return send(res, 200, { user: publicUser(target) });
+          if (body.active !== undefined) target.active = Boolean(body.active); await persist();
+          const labels = { fullName: 'Name', email: 'Email address', department: 'Department', designation: 'Position', lineManagerId: 'Line Manager', accountRole: 'Role', active: 'Account status' };
+          const changes = Object.keys(labels).filter(key => before[key] !== target[key]).map(key => `${labels[key]}: ${before[key] ?? 'not set'} → ${target[key] ?? 'not set'}`);
+          if (body.password) changes.push('Password: reset by an administrator');
+          if (changes.length) {
+            const managers = [before.lineManagerId, target.lineManagerId].map(id => db.users.find(item => item.id === id)).filter(Boolean);
+            await queueEmailNotifications([target, ...managers], { type: 'Account updated', subject: `Your CAMFED portal account was updated`, description: `Changes to ${target.fullName}'s account:\n${changes.join('\n')}`, actor: user.fullName, actorId: user.id, dashboard: 'weekly', includeInactive: true });
+          }
+          return send(res, 200, { user: publicUser(target) });
         }
         if (req.method === 'DELETE') {
           // Keep submitted reports and their feedback threads. Route reports and direct reports
           // assigned to a deleted manager to the administrator performing the deletion.
           for (const report of db.reports) if (report.lineManagerId === target.id) { report.originalLineManagerId = target.id; report.lineManagerId = user.id; }
           for (const account of db.users) if (account.id !== target.id && account.lineManagerId === target.id) account.lineManagerId = user.id;
-          db.users = db.users.filter(item => item.id !== target.id); await persist(); return send(res, 200, { ok: true });
+          const deletedAccount = { ...target };
+          db.users = db.users.filter(item => item.id !== target.id); await persist();
+          await queueEmailNotifications([deletedAccount], { type: 'Account deleted', subject: 'Your CAMFED portal account was deleted', description: `The account for ${deletedAccount.fullName} (${deletedAccount.email}) was deleted by an administrator.`, actor: user.fullName, actorId: user.id, dashboard: 'weekly', includeInactive: true });
+          return send(res, 200, { ok: true });
         }
       }
     }
@@ -880,7 +897,7 @@ async function handleRequest(req, res) {
       activity.progressPercentByUser = { ...(activity.progressPercentByUser || {}), [user.id]: progressPercent };
       recordActivityHistory(activity, { type: 'status_changed', actorId: user.id, actorName: user.fullName, assigneeId: user.id, previousStatus, status, progressPercent, details: updateText });
       await persist();
-      await queueEmailNotifications(activityNotificationRecipients(activity, activity.assigneeIds), { type: 'Activity status update', subject: 'Activity update: ' + activity.title, description: `${updateText}\nStatus: ${status}\nProgress: ${progressPercent}%\nEvidence files: ${attachments.length}\nDeadline: ${activity.deadline}`, actor: user.fullName, actorId: user.id, dashboard: 'manager-activities' });
+      await queueEmailNotifications(activityNotificationRecipients(activity, [user.id]), { type: 'Activity status update', subject: 'Activity update: ' + activity.title, description: `${user.fullName} updated their progress.\nStatus: ${status}\nProgress: ${progressPercent}%\nEvidence files: ${attachments.length}\nDeadline: ${activity.deadline}\n${updateText}`, actor: user.fullName, actorId: user.id, dashboard: 'manager-activities' });
       return send(res, 201, { ok: true });
     }
     if (req.method === 'GET' && url.pathname === '/api/manager/activities') {
@@ -966,7 +983,7 @@ async function handleRequest(req, res) {
       const scope = activityScope(user);
       const [, activityId, assigneeId] = managerActivityReplyMatch;
       const activity = db.activities.find(item => item.id === activityId && canManageActivity(user, item, scope) && item.assigneeIds.includes(assigneeId));
-      const assignee = db.users.find(item => item.id === assigneeId && item.role === 'user' && item.active !== false && scope.visibleIds.has(item.id));
+      const assignee = db.users.find(item => item.id === assigneeId && item.active !== false && scope.visibleIds.has(item.id));
       if (!activity || !assignee) return send(res, 404, { error: 'Assigned activity participant not found.' });
       const body = await readBody(req, 70 * 1024 * 1024); const text = String(body.text || '').trim();
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter a reply of 1 to 5,000 characters.' });
@@ -1029,7 +1046,7 @@ async function handleRequest(req, res) {
       if (!Array.isArray(report.privateMessages)) report.privateMessages = [];
       const message = { id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, recipientId: recipient.id, text, createdAt: new Date().toISOString() };
       report.privateMessages.push(message); await persist();
-      await queueEmailNotifications([recipient], { type: 'Private Report Chat', subject: 'New private report chat message', description: text, actor: user.fullName, actorId: user.id, dashboard: 'manager-reports' });
+      await queueEmailNotifications([recipient], { type: 'Private Report Chat', subject: 'New private report chat message', description: `Report owner: ${report.staff?.fullName || 'Unknown'}\nWeek commencing: ${report.staff?.weekCommencing || 'Unknown'}\n\n${text}`, actor: user.fullName, actorId: user.id, dashboard: 'manager-reports' });
       return send(res, 201, { message });
     }
     const feedbackMatch = url.pathname.match(/^\/api\/manager\/reports\/([\w-]+)\/feedback$/);
@@ -1045,7 +1062,7 @@ async function handleRequest(req, res) {
       report.feedback.push(feedback); await persist();
       if (sentAt) {
         const recipient = db.users.find(item => item.id === report.userId && item.active !== false);
-        await queueEmailNotifications(recipient ? [recipient] : [], { type: 'Private Report Reply', subject: 'Private reply on your weekly report', description: text, actor: user.fullName, actorId: user.id, dashboard: 'reports' });
+        await queueEmailNotifications(recipient ? [recipient] : [], { type: 'Private Report Reply', subject: 'Private reply on your weekly report', description: `Report week commencing: ${report.staff?.weekCommencing || 'Unknown'}\n\n${text}`, actor: user.fullName, actorId: user.id, dashboard: 'reports' });
       }
       return send(res, 201, { feedback });
     }
@@ -1058,7 +1075,7 @@ async function handleRequest(req, res) {
       const newlySent = !feedback.sentAt;
       if (newlySent) feedback.sentAt = new Date().toISOString();
       await persist();
-      if (newlySent) await queueEmailNotifications(reportNotificationRecipients(report), { type: 'Line Manager Feedback', subject: 'Feedback on your weekly report', description: feedback.text, actor: user.fullName, actorId: user.id, dashboard: 'reports' });
+      if (newlySent) await queueEmailNotifications(reportNotificationRecipients(report), { type: 'Line Manager Feedback', subject: 'Feedback on your weekly report', description: `Report: ${report.staff?.fullName || 'Unknown'} · week commencing ${report.staff?.weekCommencing || 'Unknown'}\n\n${feedback.text}`, actor: user.fullName, actorId: user.id, dashboard: 'reports' });
       return send(res, 200, { ok: true });
     }
     const replyMatch = url.pathname.match(/^\/api\/my\/reports\/([\w-]+)\/feedback\/([\w-]+)\/replies$/);
@@ -1071,7 +1088,7 @@ async function handleRequest(req, res) {
       if (!text || text.length > 5000) return send(res, 400, { error: 'Enter a reply of 1 to 5,000 characters.' });
       feedback.replies.push({ id: crypto.randomUUID(), authorId: user.id, authorName: user.fullName, text, createdAt: new Date().toISOString() });
       await persist();
-      await queueEmailNotifications(reportNotificationRecipients(report), { type: 'Reply to Line Manager feedback', subject: 'New reply on weekly report: ' + report.staff.fullName, description: text, actor: user.fullName, actorId: user.id, dashboard: 'manager-reports' });
+      await queueEmailNotifications(reportNotificationRecipients(report), { type: 'Reply to Line Manager feedback', subject: 'New reply on weekly report: ' + report.staff.fullName, description: `Report week commencing: ${report.staff?.weekCommencing || 'Unknown'}\n\n${text}`, actor: user.fullName, actorId: user.id, dashboard: 'manager-reports' });
       return send(res, 201, { ok: true });
     }
     if (req.method === 'GET' && !url.pathname.startsWith('/api/')) {
