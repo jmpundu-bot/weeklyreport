@@ -420,7 +420,7 @@ function activityHierarchyRank(user) {
   const isLineManager = db.users.some(item => item.role === 'user' && item.lineManagerId === user.id) || db.reports.some(report => report.lineManagerId === user.id) || db.activities.some(activity => activity.lineManagerId === user.id);
   return isLineManager ? 1 : 0;
 }
-const canAssignActivityTo = (actor, target) => actor.role === 'admin' || activityHierarchyRank(actor) > activityHierarchyRank(target);
+const canAssignActivityTo = (actor, target) => actor.role === 'admin' || (isSeniorUser(actor) ? activityHierarchyRank(actor) >= activityHierarchyRank(target) : activityHierarchyRank(actor) > activityHierarchyRank(target));
 const reportDepartment = report => report.staff?.department || db.users.find(item => item.id === report.userId)?.department || '';
 const canReviewReport = (user, report) => isSeniorUser(user) || (isHeadUser(user) ? Boolean(user.department) && reportDepartment(report) === user.department : report.lineManagerId === user.id);
 function activityScope(user) {
@@ -438,6 +438,10 @@ function canManageActivity(user, activity, scope = activityScope(user)) {
 function activeRecipients(ids) {
   const recipientIds = new Set((ids || []).filter(Boolean));
   return db.users.filter(person => recipientIds.has(person.id) && person.active !== false);
+}
+function directLineManagerRecipients(userIds) {
+  const managerIds = db.users.filter(person => userIds.includes(person.id)).map(person => person.lineManagerId);
+  return activeRecipients(managerIds);
 }
 function supervisoryRecipientsForUsers(userIds) {
   const people = db.users.filter(person => userIds.includes(person.id));
@@ -958,8 +962,8 @@ async function handleRequest(req, res) {
       await persist();
       const affectedIds = new Set([...previousAssigneeIds, ...assigneeIds]);
       const recipients = db.users.filter(person => affectedIds.has(person.id) && person.active !== false);
-      const newCrossDepartmentAssignees = assigneeIds.map(id => db.users.find(person => person.id === id)).filter(person => person && !previousAssigneeIds.includes(person.id) && user.department && person.department && person.department !== user.department);
-      await queueEmailNotifications([...recipients, ...activityNotificationRecipients(activity, [...previousAssigneeIds, ...assigneeIds])], { type: 'Deadline Activity Changed', subject: 'Activity updated: ' + title, description: person => {
+      const newCrossDepartmentAssignees = assigneeIds.map(id => db.users.find(person => person.id === id)).filter(person => person && !previousAssigneeIds.includes(person.id) && (!user.department || !person.department || person.department !== user.department));
+      await queueEmailNotifications([...recipients, ...activityNotificationRecipients(activity, [...previousAssigneeIds, ...assigneeIds]), ...directLineManagerRecipients(newCrossDepartmentAssignees.map(person => person.id))], { type: 'Deadline Activity Changed', subject: 'Activity updated: ' + title, description: person => {
         const directReport = newCrossDepartmentAssignees.filter(assignee => assignee.lineManagerId === person.id);
         if (directReport.length) return `A cross-department activity was assigned to your direct report${directReport.length === 1 ? '' : 's'}: ${directReport.map(assignee => `${assignee.fullName} (${assignee.department})`).join(', ')}.\nAssigned by: ${user.fullName} (${user.department}).\nActivity: ${title}\n${description}\nDeadline: ${deadline}`;
         return (previousAssigneeIds.includes(person.id) || assigneeIds.includes(person.id) ? (assigneeIds.includes(person.id) ? 'You are assigned to this activity.' : 'You were removed from this activity.') : 'This activity within your supervisory scope has changed.') + '\nActivity: ' + title + '\n' + description + '\nPrevious deadline: ' + previousDeadline + '\nNew deadline: ' + deadline;
@@ -1027,8 +1031,8 @@ async function handleRequest(req, res) {
       const activity = { id: crypto.randomUUID(), lineManagerId: user.id, title, description, deadline, assigneeIds, attachments, statusByUser: {}, updates: [], createdAt, history: [{ id: crypto.randomUUID(), type: 'created', at: createdAt, actorId: user.id, actorName: user.fullName, details: 'Activity created and assigned to ' + assigneeIds.map(id => db.users.find(person => person.id === id)?.fullName || 'Unknown user').join(', ') + '.', deadline }] };
       db.activities.push(activity); await persist();
       const assignedPeople = assigneeIds.map(id => db.users.find(person => person.id === id)).filter(Boolean);
-      const crossDepartmentAssignees = assignedPeople.filter(person => user.department && person.department && person.department !== user.department);
-      await queueEmailNotifications(activityNotificationRecipients(activity), { type: 'Deadline Activity Assigned', subject: 'New activity: ' + title, description: person => {
+      const crossDepartmentAssignees = assignedPeople.filter(person => !user.department || !person.department || person.department !== user.department);
+      await queueEmailNotifications([...activityNotificationRecipients(activity), ...directLineManagerRecipients(crossDepartmentAssignees.map(person => person.id))], { type: 'Deadline Activity Assigned', subject: 'New activity: ' + title, description: person => {
         const directReport = crossDepartmentAssignees.filter(assignee => assignee.lineManagerId === person.id);
         if (directReport.length) return `A cross-department activity was assigned to your direct report${directReport.length === 1 ? '' : 's'}: ${directReport.map(assignee => `${assignee.fullName} (${assignee.department})`).join(', ')}.\nAssigned by: ${user.fullName} (${user.department}).\nActivity: ${title}\n${description}\nDeadline: ${deadline}`;
         return `Assigned to: ${assignedPeople.map(assignee => `${assignee.fullName} (${assignee.department})`).join(', ')}\n${description}\nDeadline: ${deadline}`;
