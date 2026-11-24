@@ -328,7 +328,9 @@ function waitForSocket(socket, eventName) {
   });
 }
 function dashboardLink(view) {
-  const base = String(process.env.APP_BASE_URL || ('http://localhost:' + port)).trim().replace(/\/+$/, '');
+  const vercelHost = String(process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || '').trim();
+  const fallbackBase = vercelHost ? 'https://' + vercelHost : 'http://localhost:' + port;
+  const base = String(process.env.APP_BASE_URL || fallbackBase).trim().replace(/\/+$/, '');
   return base + '/?dashboard=' + encodeURIComponent(view);
 }
 async function sendSmtpEmail(to, subject, body) {
