@@ -675,7 +675,7 @@ function selectAllAssigneesMarkup(userCount) {
   return label ? `<div class="assignee-bulk-actions"><button type="button" class="btn btn-secondary" data-select-all-assignees>${label}</button><button type="button" class="btn btn-secondary" data-clear-assignees>Clear selection</button></div>` : "";
 }
 function assigneePickerMarkup() {
-  return '<label class="assignee-search-label">Search all users<input type="search" data-assignee-search placeholder="Type a name or username" autocomplete="off"></label><div class="assignee-selected" data-assignee-selected></div><div class="assignee-results" data-assignee-results aria-live="polite"><p class="empty-reports">Type a name or username to search.</p></div>';
+  return '<label class="assignee-search-label">Search all users<input type="search" data-assignee-search placeholder="Type a name or username" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false"></label><div class="assignee-selected" data-assignee-selected></div><div class="assignee-results" data-assignee-results role="listbox" aria-live="polite"><p class="empty-reports">Type a name or username to search.</p></div>';
 }
 function renderAssigneeSelection(group, selected) {
   const selectedNode = group.querySelector("[data-assignee-selected]");
@@ -693,28 +693,24 @@ function bindAssigneePicker(group, initialUsers = []) {
   const input = group.querySelector("[data-assignee-search]");
   const results = group.querySelector("[data-assignee-results]");
   let requestId = 0;
-  let timer;
   input.addEventListener("input", () => {
-    clearTimeout(timer);
     const query = input.value.trim();
     const currentRequest = ++requestId;
+    input.setAttribute("aria-expanded", String(Boolean(query)));
     if (!query) { results.innerHTML = '<p class="empty-reports">Type a name or username to search.</p>'; return; }
-    results.innerHTML = '<p class="empty-reports">Searching users…</p>';
-    timer = setTimeout(async () => {
-      try {
-        const { users } = await api(`/api/manager/assignee-search?q=${encodeURIComponent(query)}`);
-        if (currentRequest !== requestId) return;
-        results.innerHTML = users.map(person => `<label class="assignee-option"><input type="checkbox" data-search-assignee="${escapeHtml(person.id)}" ${selected.has(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml([person.email || person.username, person.department, person.accountRole === "senior_user" ? "Senior" : person.accountRole === "head" ? "Head" : person.accountRole === "user" ? "User" : "Administrator", person.active ? "" : "Inactive"].filter(Boolean).join(" · "))}</span></label>`).join("") || '<p class="empty-reports">No matching users found.</p>';
-        results.querySelectorAll("[data-search-assignee]").forEach(checkbox => checkbox.addEventListener("change", () => {
-          const person = users.find(item => item.id === checkbox.dataset.searchAssignee);
-          if (!person) return;
-          if (checkbox.checked) selected.set(person.id, person); else selected.delete(person.id);
-          renderAssigneeSelection(group, selected);
-        }));
-      } catch (error) {
-        if (currentRequest === requestId) results.innerHTML = `<p class="empty-reports">${escapeHtml(error.message)}</p>`;
-      }
-    }, 180);
+    results.replaceChildren();
+    api(`/api/manager/assignee-search?q=${encodeURIComponent(query)}`).then(({ users }) => {
+      if (currentRequest !== requestId) return;
+      results.innerHTML = users.map(person => `<label class="assignee-option"><input type="checkbox" data-search-assignee="${escapeHtml(person.id)}" ${selected.has(person.id) ? "checked" : ""}>${escapeHtml(person.fullName)} <span>${escapeHtml([person.email || person.username, person.department, person.accountRole === "senior_user" ? "Senior" : person.accountRole === "head" ? "Head" : person.accountRole === "user" ? "User" : "Administrator", person.active ? "" : "Inactive"].filter(Boolean).join(" · "))}</span></label>`).join("") || '<p class="empty-reports">No matching users found.</p>';
+      results.querySelectorAll("[data-search-assignee]").forEach(checkbox => checkbox.addEventListener("change", () => {
+        const person = users.find(item => item.id === checkbox.dataset.searchAssignee);
+        if (!person) return;
+        if (checkbox.checked) selected.set(person.id, person); else selected.delete(person.id);
+        renderAssigneeSelection(group, selected);
+      }));
+    }).catch(error => {
+      if (currentRequest === requestId) results.innerHTML = `<p class="empty-reports">${escapeHtml(error.message)}</p>`;
+    });
   });
 }
 function bindBulkAssigneeActions(root) {
